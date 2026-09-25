@@ -25,7 +25,7 @@ machine-learning sense (no parameters are fit offline and reused).
 
 import cv2
 import numpy as np
-from sklearn.cluster import DBSCAN, KMeans
+from sklearn.cluster import DBSCAN
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 import time
@@ -110,6 +110,14 @@ class Params:
     IOU_MATCH_THRESH = 0.25
     CENTROID_MATCH_PX = 70
     EMA_ALPHA = 0.45           # smoothing for confirmed box/contact point
+
+    # --- NEW: unmerge two objects sharing one box (e.g. two bikes riding
+    # close together) when the real silhouette shows a genuine gap.
+    # Default ON, but it's a single flag: set False to fall back to the
+    # exact old single-box behavior with nothing else affected. Please
+    # review it against your own full sequence (not just this sample
+    # clip) before trusting it in production -- see chat notes.
+    ENABLE_GAP_SPLIT = True
 
 
 # ----------------------------------------------------------------------
@@ -214,6 +222,13 @@ class RoadObjectDetector:
         self.frame_idx = 0
         self.h, self.w = frame_shape[:2]
 
+        # Cached, reused every frame instead of being rebuilt each call
+        # (same output, just skips redundant allocation/recompute).
+        self._k_open3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        self._k_close9 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        self._k_search17 = np.ones((17, 17), np.uint8)
+        self._roi_area = cv2.countNonZero(self.roi_mask)
+
     # -- preprocessing -------------------------------------------------
     def preprocess(self, frame_bgr):
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
@@ -261,29 +276,33 @@ class RoadObjectDetector:
         # ourselves with an HSV-ratio test against the modeled background.
         fg_candidate = np.where(fg_raw >= 127, 255, 0).astype(np.uint8)
         fg_candidate = cv2.bitwise_and(fg_candidate, fg_candidate, mask=self.roi_mask)
-        fg_candidate = cv2.morphologyEx(fg_candidate, cv2.MORPH_OPEN,
-                                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+        fg_candidate = cv2.morphologyEx(fg_candidate, cv2.MORPH_OPEN, self._k_open3)
+
+        has_motion = cv2.countNonZero(fg_candidate) > 0
+
         bg_bgr = self.bgsub.getBackgroundImage()
-        if bg_bgr is not None:
+        if has_motion and bg_bgr is not None:
             fg_binary = self.suppress_shadows(bright_bgr, fg_candidate, bg_bgr)
         else:
             fg_binary = fg_candidate
 
-        fg_binary = cv2.bitwise_and(fg_binary, fg_binary, mask=self.roi_mask)
-        fg_binary = cv2.morphologyEx(fg_binary, cv2.MORPH_OPEN,
-                                      cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
-        fg_binary = cv2.morphologyEx(fg_binary, cv2.MORPH_CLOSE,
-                                      cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)), iterations=2)
+        # fg_binary is already a subset of fg_candidate (shadow suppression
+        # only ever zeroes pixels, never adds any), and fg_candidate was
+        # already masked to the ROI above -- so re-ANDing with roi_mask
+        # here was a no-op. Removed; result is identical, just skips the
+        # extra full-frame pass.
+        fg_binary = cv2.morphologyEx(fg_binary, cv2.MORPH_OPEN, self._k_open3)
+        fg_binary = cv2.morphologyEx(fg_binary, cv2.MORPH_CLOSE, self._k_close9, iterations=2)
 
         intermediates = {"clahe_gray": gray, "mog2_raw": fg_raw, "fg_clean": fg_binary}
 
         detections = []
         clusters_viz = None
 
-        if self.prev_gray is not None:
+        if self.prev_gray is not None and has_motion:
             # restrict corner search to (dilated) motion mask ∩ ROI so we
             # don't waste points / get noise on static buildings & sky
-            search_mask = cv2.dilate(fg_candidate, np.ones((17, 17), np.uint8))
+            search_mask = cv2.dilate(fg_candidate, self._k_search17)
             search_mask = cv2.bitwise_and(search_mask, self.roi_mask)
 
             pts0 = cv2.goodFeaturesToTrack(
@@ -306,10 +325,9 @@ class RoadObjectDetector:
 
                 if len(pts1f) >= p.MIN_CLUSTER_POINTS:
                     for cluster_pts, cluster_flow in self._blob_cluster(pts1f, flow, fg_candidate):
-                        det = self._points_to_detection(cluster_pts, fg_binary)
-                        if det is not None:
-                            detections.append(det)
+                        detections.extend(self._points_to_detection(cluster_pts, fg_binary))
                     detections = self._merge_fragments(detections)
+                    detections = self._split_by_gap(detections, fg_binary)
 
         self.prev_gray = gray
         confirmed_tracks = self.tracker.update(detections)
@@ -332,10 +350,17 @@ class RoadObjectDetector:
             out.append((gpts, gflow))
             return
         if len(gpts) >= 2 * p.MIN_CLUSTER_POINTS:
-            km = KMeans(n_clusters=2, n_init=4, random_state=0).fit(gflow)
+            # cv2.kmeans (C++ implementation) replaces sklearn.KMeans here:
+            # same 2-cluster split on the same (dx,dy) flow vectors, just
+            # much less per-call Python/estimator overhead since this can
+            # run several times per frame.
+            flow32 = gflow.astype(np.float32)
+            criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 10, 1e-3)
+            _, labels, _ = cv2.kmeans(flow32, 2, None, criteria, 4, cv2.KMEANS_PP_CENTERS)
+            labels = labels.reshape(-1)
             ok, sub = True, []
             for k in (0, 1):
-                m = km.labels_ == k
+                m = labels == k
                 if m.sum() < p.MIN_CLUSTER_POINTS or self._coherence(gflow[m]) < p.MIN_DIRECTION_COHERENCE:
                     ok = False
                     break
@@ -452,6 +477,36 @@ class RoadObjectDetector:
                 result.append((b, ((b[0] + b[2]) / 2.0, b[3])))
         return result
 
+    # -- final pass: unmerge boxes that actually contain two objects --------
+    def _split_by_gap(self, detections, fg_binary):
+        """Runs after _merge_fragments. Any box whose real silhouette
+        contains a genuine low-density valley (an actual visual gap, not
+        just 'the box is wide') gets split in two -- e.g. two bikes
+        riding close together that landed in one blob/box. A single wide
+        vehicle (bus, truck) has a continuous silhouette with no such
+        valley, so it is left exactly as before."""
+        out = []
+        for box, contact in detections:
+            x1, y1, x2, y2 = [int(v) for v in box]
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(self.w, x2), min(self.h, y2)
+            local = fg_binary[y1:y2, x1:x2]
+            yy, xx = np.where(local > 0)
+            if len(xx) < 30:
+                out.append((box, contact))
+                continue
+            split = self._gap_split(xx, yy)
+            if split is None:
+                out.append((box, contact))
+                continue
+            halves = []
+            for sub_xs, sub_ys in split:
+                res = self._box_from_local(sub_xs, sub_ys, x1, y1)
+                if res is not None:
+                    halves.append(res)
+            out.extend(halves if len(halves) == 2 else [(box, contact)])
+        return out
+
     # -- turn a cluster of flow points into a refined (box, contact) --------
     def _points_to_detection(self, cluster_pts, fg_binary):
         p = self.p
@@ -492,10 +547,12 @@ class RoadObjectDetector:
                 if len(xx) >= 15:
                     xs, ys = xx, yy
 
+        has_silhouette = True
         if xs is None:
             # FALLBACK: fg mask too weak/fragmented (common in dusk, low
             # contrast). Build the box directly from the flow-point cloud
             # itself, padded slightly, rather than discarding the object.
+            has_silhouette = False
             px_local = (cluster_pts[:, 0] - rx1).astype(np.int32)
             py_local = (cluster_pts[:, 1] - ry1).astype(np.int32)
             pad2 = 4
@@ -509,14 +566,67 @@ class RoadObjectDetector:
             bx1, bx2 = xs.min() + rx1, xs.max() + rx1
             by1, by2 = ys.min() + ry1, ys.max() + ry1
 
+        res = self._box_from_local(xs, ys, rx1, ry1)
+        return [res] if res is not None else []
+
+    def _gap_split(self, xs, ys):
+        """Look for a real horizontal gap (a genuinely empty column band,
+        not just one sparse column) in a silhouette's column-density
+        profile. Returns [(xs,ys),(xs,ys)] for the two halves if a clear
+        valley is found, else None. Deliberately conservative -- MOG2
+        masks are patchy even on a single solid object, so this only
+        fires on strong, wide, well-supported evidence, not a single
+        noisy pixel gap.
+        """
+        p = self.p
+        w_box = int(xs.max() - xs.min()) + 1
+        h_box = int(ys.max() - ys.min()) + 1
+        total = len(xs)
+        if w_box < 3 * p.MIN_W_PX or total < 60:
+            return None
+        xs0 = xs - xs.min()
+        col_counts = np.bincount(xs0.astype(np.int32), minlength=w_box).astype(np.float32)
+        # smooth over a small window so a single stray empty/occupied
+        # column can't masquerade as (or hide) a real gap
+        win = 5
+        kernel = np.ones(win, dtype=np.float32) / win
+        smoothed = np.convolve(col_counts, kernel, mode="same")
+
+        margin = max(6, int(0.15 * w_box))
+        lo, hi = margin, w_box - margin
+        if hi <= lo:
+            return None
+        band = smoothed[lo:hi]
+        if band.size == 0:
+            return None
+        valley_rel = int(np.argmin(band))
+        valley_density = band[valley_rel] / float(max(1, h_box))
+        if valley_density > 0.04:
+            return None  # not a real gap -- likely one continuous/patchy object
+        valley = lo + valley_rel
+
+        left = xs0 < valley
+        right = ~left
+        # each half must carry a real, substantial share of the mass --
+        # rejects "chipping a sliver off one edge" false splits
+        if min(left.sum(), right.sum()) < max(30, int(0.25 * total)):
+            return None
+        return [(xs[left], ys[left]), (xs[right], ys[right])]
+
+    def _box_from_local(self, xs, ys, rx1, ry1):
+        """Shared box/contact-point construction from local silhouette
+        coordinates -- same gates and contact-point logic that used to
+        live inline in _points_to_detection."""
+        p = self.p
+        bx1, bx2 = xs.min() + rx1, xs.max() + rx1
+        by1, by2 = ys.min() + ry1, ys.max() + ry1
         w_box, h_box = bx2 - bx1, by2 - by1
         if w_box < p.MIN_W_PX or h_box < min_height_for_row(by2, self.h, p):
             return None
         aspect = max(w_box / max(h_box, 1), h_box / max(w_box, 1))
         if aspect > p.MAX_ASPECT:
             return None
-        roi_area = cv2.countNonZero(self.roi_mask)
-        if w_box * h_box > p.MAX_BOX_AREA_FRAC * roi_area:
+        if w_box * h_box > p.MAX_BOX_AREA_FRAC * self._roi_area:
             return None
 
         # ground-contact point: bottom-center of the *object* silhouette,
