@@ -28,6 +28,21 @@ FUSION
       into ONE shared tracker (identical tracker/confirmation logic as
       before), so a real object gets exactly one stable track whether
       it was caught by motion, appearance, or both.
+
+PERFORMANCE NOTES (v2, output-identical to v1)
+      Every optimisation here is exact -- the detections, boxes, contact
+      points and track IDs are bit-for-bit the same as the original
+      implementation; only redundant work was removed:
+        * pixel-wise stages (gamma, MOG2, Lab, shadow test, static branch)
+          run on the ROI rows only; morphology runs on a zero-padded ROI
+          window so border behaviour matches the full-frame version
+        * the static branch's Lab z-score uses 3 x 256-entry lookup tables
+          instead of float32 maths over every pixel
+        * shadow suppression only inspects foreground pixels
+        * per-blob work uses the blob's bounding box, not the whole frame
+        * the Sobel edge cue was removed: `dev | (edge & dev) == dev`, so it
+          never affected the output
+      Optical flow / corner detection still run on the full frame on purpose.
 """
 
 import cv2
@@ -35,7 +50,9 @@ import numpy as np
 from sklearn.cluster import DBSCAN, KMeans
 from dataclasses import dataclass
 from typing import List, Tuple
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 
 # ----------------------------------------------------------------------
@@ -101,6 +118,11 @@ class Params:
 
     # --- fusion (NEW) ---
     FUSE_IOU_THRESH = 0.3            # boxes above this IoU from the two branches = same object
+
+    # --- performance only (no effect on results) ---
+    # Run the static and motion branches concurrently on multi-core machines.
+    # Automatically ignored when only one CPU is available.
+    PARALLEL_BRANCHES = True
 
     # --- tracking / temporal consensus (shared) ---
     MIN_HITS_TO_CONFIRM = 3
@@ -202,9 +224,39 @@ class MultiObjectTracker:
 
 # ----------------------------------------------------------------------
 class RoadObjectDetector:
-    def __init__(self, frame_shape, p: Params = Params()):
+    # Rows/cols of zero padding kept around the ROI when running morphology.
+    # The original ran morphology on the full frame, where everything outside
+    # the ROI is zero. A zero-padded window >= the deepest dilate->erode chain
+    # (18-20 px here) reproduces that exactly. 32 gives headroom.
+    PAD = 32
+
+    def __init__(self, frame_shape, p: Params = Params(), collect_intermediates=False):
         self.p = p
+        self.collect_intermediates = collect_intermediates
+        self.h, self.w = frame_shape[:2]
         self.roi_mask = build_roi_mask(frame_shape, p.ROI_POLY_FRAC)
+        ys, xs = np.where(self.roi_mask > 0)
+        self.roi_y0, self.roi_y1 = int(ys.min()), int(ys.max())
+        self.roi_x0, self.roi_x1 = int(xs.min()), int(xs.max())
+
+        # ROI bounding box (end-exclusive) -- pixel-wise stages run only here
+        self.ry0, self.ry1 = self.roi_y0, self.roi_y1 + 1
+        self.rx0, self.rx1 = self.roi_x0, self.roi_x1 + 1
+        self.rh, self.rw = self.ry1 - self.ry0, self.rx1 - self.rx0
+        self.roi_c = np.ascontiguousarray(self.roi_mask[self.ry0:self.ry1, self.rx0:self.rx1])
+        # For the default rectangular ROI every "AND with roi_mask" is a no-op
+        self.roi_is_rect = bool(np.all(self.roi_c > 0))
+        self.roi_area = cv2.countNonZero(self.roi_mask)
+
+        # Zero-padded window around the ROI, used for morphology
+        self.py0 = max(0, self.ry0 - self.PAD)
+        self.py1 = min(self.h, self.ry1 + self.PAD)
+        self.px0 = max(0, self.rx0 - self.PAD)
+        self.px1 = min(self.w, self.rx1 + self.PAD)
+        self.Hw, self.Ww = self.py1 - self.py0, self.px1 - self.px0
+        self.oy, self.ox = self.ry0 - self.py0, self.rx0 - self.px0
+        self._roi_in_win = (slice(self.oy, self.oy + self.rh), slice(self.ox, self.ox + self.rw))
+
         self.clahe = cv2.createCLAHE(clipLimit=p.CLAHE_CLIP, tileGridSize=p.CLAHE_GRID)
         self.bgsub = cv2.createBackgroundSubtractorMOG2(
             history=p.MOG2_HISTORY, varThreshold=p.MOG2_VAR_THRESH,
@@ -212,10 +264,31 @@ class RoadObjectDetector:
         self.prev_gray = None
         self.tracker = MultiObjectTracker(p)
         self.frame_idx = 0
-        self.h, self.w = frame_shape[:2]
-        ys, xs = np.where(self.roi_mask > 0)
-        self.roi_y0, self.roi_y1 = int(ys.min()), int(ys.max())
-        self.roi_x0, self.roi_x1 = int(xs.min()), int(xs.max())
+
+        # ---- constants hoisted out of the per-frame path ----
+        inv = 1.0 / p.GAMMA
+        self.gamma_table = (np.linspace(0, 1, 256) ** inv * 255).astype(np.uint8)
+        E = cv2.getStructuringElement
+        self.k_ell3 = E(cv2.MORPH_ELLIPSE, (3, 3))
+        self.k_ell9 = E(cv2.MORPH_ELLIPSE, (9, 9))
+        self.k_ell5 = E(cv2.MORPH_ELLIPSE, (5, 5))
+        self.k_blob = E(cv2.MORPH_ELLIPSE, (p.BLOB_DILATE_PX, p.BLOB_DILATE_PX))
+        self.k_ones17 = np.ones((17, 17), np.uint8)
+        self.k_horiz = E(cv2.MORPH_RECT, (15, 3))
+        self.k_vert = E(cv2.MORPH_RECT, (3, 15))
+        self._v256 = np.arange(256, dtype=np.float32)
+        self._z_thresh = np.float32(p.STATIC_Z_THRESH)
+
+        # optional worker so the static branch can run alongside the motion branch
+        try:
+            n_cpu = len(os.sched_getaffinity(0))
+        except AttributeError:
+            n_cpu = os.cpu_count() or 1
+        self._pool = ThreadPoolExecutor(max_workers=1) if (p.PARALLEL_BRANCHES and n_cpu > 1) else None
+
+        # persistent full-frame buffers (zero outside the ROI, always)
+        self._fg_bin_full = np.zeros((self.h, self.w), np.uint8)
+        self._search_full = np.zeros((self.h, self.w), np.uint8)
 
     # -- preprocessing -------------------------------------------------
     def preprocess(self, frame_bgr):
@@ -224,103 +297,121 @@ class RoadObjectDetector:
         return gray
 
     def gamma_correct(self, frame_bgr):
-        g = self.p.GAMMA
-        inv = 1.0 / g
-        table = (np.linspace(0, 1, 256) ** inv * 255).astype(np.uint8)
-        return cv2.LUT(frame_bgr, table)
+        return cv2.LUT(frame_bgr, self.gamma_table)
 
     def suppress_shadows(self, frame_bgr, fg_mask, bg_bgr):
+        """Same HSV ratio test as before, but only evaluated at foreground
+        pixels -- the original only ever zeroed pixels that were already
+        foreground, so the result is identical."""
         p = self.p
-        hsv_f = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
-        hsv_b = cv2.cvtColor(bg_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+        out = fg_mask.copy()
+        ys, xs = np.nonzero(fg_mask)
+        if ys.size == 0:
+            return out
+        y0, y1 = ys.min(), ys.max() + 1
+        x0, x1 = xs.min(), xs.max() + 1
+        hsv_f = cv2.cvtColor(frame_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+        hsv_b = cv2.cvtColor(bg_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+        ly, lx = ys - y0, xs - x0
+        f = hsv_f[ly, lx].astype(np.float32)
+        b = hsv_b[ly, lx].astype(np.float32)
         eps = 1e-3
-        v_ratio = hsv_f[..., 2] / (hsv_b[..., 2] + eps)
-        s_diff = np.abs(hsv_f[..., 1] - hsv_b[..., 1])
-        h_diff = np.minimum(np.abs(hsv_f[..., 0] - hsv_b[..., 0]), 180 - np.abs(hsv_f[..., 0] - hsv_b[..., 0]))
+        v_ratio = f[:, 2] / (b[:, 2] + eps)
+        s_diff = np.abs(f[:, 1] - b[:, 1])
+        h_abs = np.abs(f[:, 0] - b[:, 0])
+        h_diff = np.minimum(h_abs, 180 - h_abs)
         is_shadow = (v_ratio > p.SHADOW_V_RATIO[0]) & (v_ratio < p.SHADOW_V_RATIO[1]) & \
                     (s_diff < p.SHADOW_S_DIFF_MAX) & (h_diff < p.SHADOW_H_DIFF_MAX)
-        out = fg_mask.copy()
-        out[is_shadow] = 0
+        out[ys[is_shadow], xs[is_shadow]] = 0
         return out
 
     # ==================================================================
-    # BRANCH B: static / appearance-based road-model detection (NEW)
+    # BRANCH B: static / appearance-based road-model detection
     # ==================================================================
-    def _static_candidates(self, bright_bgr, gray_clahe, motion_mask):
+    def _static_candidates(self, bright_roi, fg_c_roi):
         """Model the road surface's own Lab color from a trusted seed
         patch (excluding anything the motion branch already flagged),
         then flag any ROI pixel that deviates from that model. Runs
         every frame, independent of motion -- this is what catches
-        parked/stationary objects that Branch A structurally cannot."""
+        parked/stationary objects that Branch A structurally cannot.
+
+        `bright_roi` / `fg_c_roi` are the ROI-cropped gamma image and
+        motion mask. Output coordinates are full-frame."""
         p = self.p
-        lab = cv2.cvtColor(bright_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab = cv2.cvtColor(bright_roi, cv2.COLOR_BGR2LAB)     # uint8, ROI only
 
         # ---- grow the seed strip upward until we have enough clean pixels ----
         cx0 = int(self.w * (0.5 - p.STATIC_SEED_WIDTH_FRAC / 2))
         cx1 = int(self.w * (0.5 + p.STATIC_SEED_WIDTH_FRAC / 2))
+        xa = max(cx0, self.rx0) - self.rx0
+        xb = max(xa, min(cx1, self.rx1) - self.rx0)
         seed_h_frac = p.STATIC_SEED_HEIGHT_FRAC
-        seed_mask = None
         while True:
             sy0 = int(self.roi_y1 - self.h * seed_h_frac)
             sy0 = max(self.roi_y0, sy0)
-            cand = np.zeros((self.h, self.w), dtype=bool)
-            cand[sy0:self.roi_y1, cx0:cx1] = True
-            cand &= (self.roi_mask > 0)
-            cand &= (motion_mask == 0)
+            ya = sy0 - self.ry0
+            yb = max(ya, self.roi_y1 - self.ry0)      # rows [sy0, roi_y1)
+            cand = (fg_c_roi[ya:yb, xa:xb] == 0)
+            if not self.roi_is_rect:
+                cand &= (self.roi_c[ya:yb, xa:xb] > 0)
             if cand.sum() >= p.STATIC_SEED_MIN_PIXELS or seed_h_frac >= p.STATIC_SEED_MAX_HEIGHT_FRAC:
-                seed_mask = cand
                 break
             seed_h_frac += 0.06
 
-        if seed_mask is None or seed_mask.sum() < 50:
+        if cand.sum() < 50:
             # road immediately ahead is fully occluded (e.g. truck right in
             # front) -- nothing safe to model this frame, skip static branch
-            empty_mask = np.zeros((self.h, self.w), dtype=np.uint8)
-            return [], empty_mask
+            return [], None
 
-        seed_pixels = lab[seed_mask]
+        seed_pixels = lab[ya:yb, xa:xb][cand].astype(np.float32)
         mean = seed_pixels.mean(axis=0)
         std = np.maximum(seed_pixels.std(axis=0), p.STATIC_MIN_STD)
 
         # ---- per-pixel Lab z-score distance from the road model ----
-        diff = (lab - mean.reshape(1, 1, 3)) / std.reshape(1, 1, 3)
-        z = np.sqrt((diff ** 2).sum(axis=2))
-        deviation = (z > p.STATIC_Z_THRESH).astype(np.uint8) * 255
-        deviation = cv2.bitwise_and(deviation, deviation, mask=self.roi_mask)
+        # Lab channels are integers 0..255, so (v-mean)/std squared is a
+        # 256-entry table per channel: same float32 arithmetic, one lookup
+        # per pixel instead of a full float32 pass.
+        v = self._v256
+        lut0 = np.ascontiguousarray(((v - mean[0]) / std[0]) ** 2)
+        lut1 = np.ascontiguousarray(((v - mean[1]) / std[1]) ** 2)
+        lut2 = np.ascontiguousarray(((v - mean[2]) / std[2]) ** 2)
+        Lp, Ap, Bp = cv2.split(lab)
+        sq = cv2.LUT(Lp, lut0)
+        sq2 = cv2.LUT(Ap, lut1)
+        sq3 = cv2.LUT(Bp, lut2)
+        z = np.sqrt(sq + (sq2 + sq3))
+        deviation = (z > self._z_thresh).view(np.uint8) * np.uint8(255)
+        if not self.roi_is_rect:
+            deviation = cv2.bitwise_and(deviation, deviation, mask=self.roi_c)
 
-        # ---- edge cue (helps solidify texture-distinct, color-similar objects) ----
-        sx = cv2.Sobel(gray_clahe, cv2.CV_32F, 1, 0, ksize=3)
-        sy = cv2.Sobel(gray_clahe, cv2.CV_32F, 0, 1, ksize=3)
-        mag = cv2.normalize(cv2.magnitude(sx, sy), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        _, edge_mask = cv2.threshold(mag, p.STATIC_EDGE_THRESH, 255, cv2.THRESH_BINARY)
-        edge_mask = cv2.bitwise_and(edge_mask, edge_mask, mask=self.roi_mask)
+        # NOTE: the original OR'd in a Sobel edge cue as
+        #   combined = dev | (edge & dev)
+        # which is identically `dev` (absorption law), so it is omitted.
+        combined = deviation
+        combined[ya:yb, xa:xb][cand] = 0   # never let the seed strip survive
 
-        combined = cv2.bitwise_or(deviation, cv2.bitwise_and(edge_mask, deviation))
-        # never let the seed strip itself (by construction ~road) survive
-        combined[seed_mask] = 0
-
-        # ---- solidify into silhouettes, same style as the motion branch ----
-        horiz_k = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
-        vert_k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 15))
-        solid = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, horiz_k)
-        solid = cv2.morphologyEx(solid, cv2.MORPH_CLOSE, vert_k)
-        open_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        solid = cv2.morphologyEx(solid, cv2.MORPH_OPEN, open_k)
+        # ---- solidify into silhouettes (zero-padded window == full frame) ----
+        win = np.zeros((self.Hw, self.Ww), np.uint8)
+        win[self._roi_in_win] = combined
+        solid = cv2.morphologyEx(win, cv2.MORPH_CLOSE, self.k_horiz)
+        solid = cv2.morphologyEx(solid, cv2.MORPH_CLOSE, self.k_vert)
+        solid = cv2.morphologyEx(solid, cv2.MORPH_OPEN, self.k_ell5)
 
         n, lbl, stats, _ = cv2.connectedComponentsWithStats(solid, connectivity=8)
         roi_w = self.roi_x1 - self.roi_x0
         max_w = p.STATIC_MAX_SINGLE_OBJ_WIDTH_FRAC * roi_w
-        roi_area = cv2.countNonZero(self.roi_mask)
 
         out = []
         for b in range(1, n):
             area = stats[b, cv2.CC_STAT_AREA]
             if area < p.STATIC_MIN_BOX_AREA:
                 continue
-            x = stats[b, cv2.CC_STAT_LEFT]
-            y = stats[b, cv2.CC_STAT_TOP]
+            wx = stats[b, cv2.CC_STAT_LEFT]
+            wy = stats[b, cv2.CC_STAT_TOP]
             w_ = stats[b, cv2.CC_STAT_WIDTH]
             h_ = stats[b, cv2.CC_STAT_HEIGHT]
+            x = wx + self.px0
+            y = wy + self.py0
             if w_ > max_w:
                 continue
             if h_ < min_height_for_row(y + h_, self.h, p):
@@ -328,10 +419,13 @@ class RoadObjectDetector:
             aspect = max(w_ / max(h_, 1), h_ / max(w_, 1))
             if aspect > p.MAX_ASPECT:
                 continue
-            if w_ * h_ > p.MAX_BOX_AREA_FRAC * roi_area:
+            if w_ * h_ > p.MAX_BOX_AREA_FRAC * self.roi_area:
                 continue
-            blob = (lbl == b)
-            ys_, xs_ = np.where(blob)
+            # only look inside this blob's bounding box (not the whole frame)
+            blob = (lbl[wy:wy + h_, wx:wx + w_] == b)
+            ys_l, xs_l = np.where(blob)
+            ys_ = ys_l + y
+            xs_ = xs_l + x
             bottom_band = ys_ >= (ys_.max() - 3)
             contact_x = float(xs_[bottom_band].mean())
             contact_y = float(ys_.max())
@@ -340,18 +434,20 @@ class RoadObjectDetector:
         return out, solid
 
     # ==================================================================
-    # BRANCH A: motion / optical-flow detection (unchanged logic)
+    # BRANCH A: motion / optical-flow detection
     # ==================================================================
-    def _motion_candidates(self, gray, fg_candidate, fg_binary):
+    def _motion_candidates(self, gray, fg_c_roi, fg_binary):
         p = self.p
         detections = []
         clusters_viz = None
         if self.prev_gray is not None:
-            search_mask = cv2.dilate(fg_candidate, np.ones((17, 17), np.uint8))
-            search_mask = cv2.bitwise_and(search_mask, self.roi_mask)
+            search_roi = cv2.dilate(fg_c_roi, self.k_ones17)
+            if not self.roi_is_rect:
+                search_roi = cv2.bitwise_and(search_roi, self.roi_c)
+            self._search_full[self.ry0:self.ry1, self.rx0:self.rx1] = search_roi
             pts0 = cv2.goodFeaturesToTrack(
                 self.prev_gray, maxCorners=p.MAX_CORNERS, qualityLevel=p.QUALITY_LEVEL,
-                minDistance=p.MIN_DISTANCE, blockSize=p.BLOCK_SIZE, mask=search_mask)
+                minDistance=p.MIN_DISTANCE, blockSize=p.BLOCK_SIZE, mask=self._search_full)
             if pts0 is not None and len(pts0) >= p.MIN_CLUSTER_POINTS:
                 pts1, st, err = cv2.calcOpticalFlowPyrLK(
                     self.prev_gray, gray, pts0, None,
@@ -365,7 +461,7 @@ class RoadObjectDetector:
                 pts0f, pts1f, flow, mag = pts0f[keep], pts1f[keep], flow[keep], mag[keep]
                 clusters_viz = (pts1f, flow)
                 if len(pts1f) >= p.MIN_CLUSTER_POINTS:
-                    for cluster_pts, cluster_flow in self._blob_cluster(pts1f, flow, fg_candidate):
+                    for cluster_pts, cluster_flow in self._blob_cluster(pts1f, flow, fg_c_roi):
                         det = self._points_to_detection(cluster_pts, fg_binary)
                         if det is not None:
                             box, contact = det
@@ -396,16 +492,22 @@ class RoadObjectDetector:
             if ok:
                 out.extend(sub)
 
-    def _blob_cluster(self, pts, flow, fg_candidate):
+    def _blob_cluster(self, pts, flow, fg_c_roi):
         p = self.p
         out = []
-        dil = cv2.dilate(fg_candidate, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (p.BLOB_DILATE_PX, p.BLOB_DILATE_PX)))
-        dil = cv2.bitwise_and(dil, self.roi_mask)
+        dil = cv2.dilate(fg_c_roi, self.k_blob)
+        if not self.roi_is_rect:
+            dil = cv2.bitwise_and(dil, self.roi_c)
         n, lbl, stats, _ = cv2.connectedComponentsWithStats(dil, connectivity=8)
         pts_i = pts.astype(np.int32)
         pts_i[:, 0] = np.clip(pts_i[:, 0], 0, self.w - 1)
         pts_i[:, 1] = np.clip(pts_i[:, 1], 0, self.h - 1)
-        blob_id = lbl[pts_i[:, 1], pts_i[:, 0]]
+        # labels only exist inside the ROI box; anything outside is label 0
+        yy = pts_i[:, 1] - self.ry0
+        xx = pts_i[:, 0] - self.rx0
+        inside = (yy >= 0) & (yy < self.rh) & (xx >= 0) & (xx < self.rw)
+        blob_id = np.zeros(len(pts_i), dtype=lbl.dtype)
+        blob_id[inside] = lbl[yy[inside], xx[inside]]
         unmatched = blob_id == 0
         for b in range(1, n):
             if stats[b, cv2.CC_STAT_AREA] < p.MIN_BLOB_AREA:
@@ -530,8 +632,7 @@ class RoadObjectDetector:
         aspect = max(w_box / max(h_box, 1), h_box / max(w_box, 1))
         if aspect > p.MAX_ASPECT:
             return None
-        roi_area = cv2.countNonZero(self.roi_mask)
-        if w_box * h_box > p.MAX_BOX_AREA_FRAC * roi_area:
+        if w_box * h_box > p.MAX_BOX_AREA_FRAC * self.roi_area:
             return None
         bottom_band = ys >= (ys.max() - 3)
         contact_x = xs[bottom_band].mean() + rx1
@@ -569,32 +670,57 @@ class RoadObjectDetector:
     # -- main per-frame call --------------------------------------------
     def process(self, frame_bgr):
         p = self.p
-        gray = self.preprocess(frame_bgr)
-        bright_bgr = self.gamma_correct(frame_bgr)
+        rs = (slice(self.ry0, self.ry1), slice(self.rx0, self.rx1))
+        in_win = self._roi_in_win
 
-        fg_raw = self.bgsub.apply(bright_bgr, learningRate=p.MOG2_LEARNING_RATE)
-        fg_candidate = np.where(fg_raw >= 127, 255, 0).astype(np.uint8)
-        fg_candidate = cv2.bitwise_and(fg_candidate, fg_candidate, mask=self.roi_mask)
-        fg_candidate = cv2.morphologyEx(fg_candidate, cv2.MORPH_OPEN,
-                                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
-        bg_bgr = self.bgsub.getBackgroundImage()
-        if bg_bgr is not None:
-            fg_binary = self.suppress_shadows(bright_bgr, fg_candidate, bg_bgr)
+        gray = self.preprocess(frame_bgr)               # full frame (optical flow needs it)
+        bright = self.gamma_correct(frame_bgr[rs])      # ROI only
+
+        # MOG2 is strictly per-pixel, so running it on the ROI crop gives the
+        # same result inside the ROI as running it on the full frame.
+        fg_raw = self.bgsub.apply(bright, learningRate=p.MOG2_LEARNING_RATE)
+        cand = cv2.threshold(fg_raw, 126, 255, cv2.THRESH_BINARY)[1]   # == (fg_raw >= 127)
+        if not self.roi_is_rect:
+            cand = cv2.bitwise_and(cand, cand, mask=self.roi_c)
+        wcand = np.zeros((self.Hw, self.Ww), np.uint8)
+        wcand[in_win] = cand
+        wcand = cv2.morphologyEx(wcand, cv2.MORPH_OPEN, self.k_ell3)
+        fg_c_roi = wcand[in_win]                        # == fg_candidate, ROI part
+
+        if cv2.countNonZero(fg_c_roi):
+            bg_bgr = self.bgsub.getBackgroundImage()
+            fg_bin = self.suppress_shadows(bright, fg_c_roi, bg_bgr) if bg_bgr is not None else fg_c_roi.copy()
         else:
-            fg_binary = fg_candidate
-        fg_binary = cv2.bitwise_and(fg_binary, fg_binary, mask=self.roi_mask)
-        fg_binary = cv2.morphologyEx(fg_binary, cv2.MORPH_OPEN,
-                                      cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
-        fg_binary = cv2.morphologyEx(fg_binary, cv2.MORPH_CLOSE,
-                                      cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)), iterations=2)
+            fg_bin = fg_c_roi.copy()
+        if not self.roi_is_rect:
+            fg_bin = cv2.bitwise_and(fg_bin, fg_bin, mask=self.roi_c)
+        wbin = np.zeros((self.Hw, self.Ww), np.uint8)
+        wbin[in_win] = fg_bin
+        wbin = cv2.morphologyEx(wbin, cv2.MORPH_OPEN, self.k_ell3)
+        wbin = cv2.morphologyEx(wbin, cv2.MORPH_CLOSE, self.k_ell9, iterations=2)
+        self._fg_bin_full[rs] = wbin[in_win]
+        fg_binary = self._fg_bin_full
 
-        motion_dets, clusters_viz = self._motion_candidates(gray, fg_candidate, fg_binary)
-        static_dets, static_mask = self._static_candidates(bright_bgr, gray, fg_candidate)
+        if self._pool is not None:
+            # both branches only read the shared masks, so order doesn't matter
+            static_fut = self._pool.submit(self._static_candidates, bright, fg_c_roi)
+            motion_dets, clusters_viz = self._motion_candidates(gray, fg_c_roi, fg_binary)
+            static_dets, static_mask = static_fut.result()
+        else:
+            motion_dets, clusters_viz = self._motion_candidates(gray, fg_c_roi, fg_binary)
+            static_dets, static_mask = self._static_candidates(bright, fg_c_roi)
 
         fused = self._fuse(motion_dets, static_dets, p.FUSE_IOU_THRESH)
 
-        intermediates = {"clahe_gray": gray, "mog2_raw": fg_raw, "fg_clean": fg_binary,
-                          "static_mask": static_mask}
+        intermediates = {"clahe_gray": gray, "fg_clean": fg_binary}
+        if self.collect_intermediates:
+            full = np.zeros((self.h, self.w), np.uint8)
+            full[rs] = fg_raw
+            intermediates["mog2_raw"] = full
+            sm = np.zeros((self.h, self.w), np.uint8)
+            if static_mask is not None:
+                sm[self.py0:self.py1, self.px0:self.px1] = static_mask
+            intermediates["static_mask"] = sm
 
         self.prev_gray = gray
         confirmed_tracks = self.tracker.update(fused)
