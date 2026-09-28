@@ -28,9 +28,12 @@ statistic computed fresh.
 - `detector.py` — the fused detector (`RoadObjectDetector`, `Params`)
 - `run_on_video.py` — processes an .mp4, writes an annotated output video
   + a CSV log (frame, track id, box, ground-contact point, which branch(es)
-  fired)
+  fired, lateral_m, forward_m, angle_deg). Distances/angle are also printed
+  in the terminal whenever they change
 - `geometry.py` — ground-contact pixel → real-world forward/lateral
-  distance + angle, using **115 cm** camera height as specified
+  distance + angle. Calibration (fx, fy, cx, cy, distortion) and the
+  camera height (`CAMERA_HEIGHT_M`, currently **0.30 m**) are copied from
+  `main.py`; edit them at the top of the file
 
 ## Running it
 ```

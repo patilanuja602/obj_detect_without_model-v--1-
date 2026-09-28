@@ -8,6 +8,7 @@ import time
 import cv2
 
 from detector import RoadObjectDetector, Params
+from geometry import GroundGeometry
 
 # color per source, for visual debugging: green=motion, cyan=static, yellow=both
 SRC_COLOR = {"motion": (0, 255, 0), "static": (255, 255, 0), "motion+static": (0, 255, 255)}
@@ -69,10 +70,13 @@ def main():
 
     p = Params()
     det = RoadObjectDetector((h, w, 3), p)
+    geo = GroundGeometry(w, h)
+    last_print_str = ""
 
     csv_file = open(args.csv, "w", newline="")
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(["frame", "track_id", "x1", "y1", "x2", "y2", "contact_x", "contact_y", "source"])
+    csv_writer.writerow(["frame", "track_id", "x1", "y1", "x2", "y2", "contact_x", "contact_y", "source",
+                         "lateral_m", "forward_m", "angle_deg"])
 
     # background decode / encode threads (cv2 releases the GIL in read/write)
     stop = threading.Event()
@@ -102,6 +106,7 @@ def main():
         n_done += 1
 
         vis = frame.copy()
+        terminal_lines = []
         for t in confirmed:
             x1, y1, x2, y2 = [int(v) for v in t.box]
             cx, cy = [int(v) for v in t.contact]
@@ -110,7 +115,24 @@ def main():
             cv2.circle(vis, (cx, cy), 5, (0, 0, 255), -1)
             cv2.putText(vis, f"Obj{t.id}", (x1, max(12, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
-            csv_writer.writerow([frame_idx, t.id, x1, y1, x2, y2, cx, cy, t.sources])
+            g = geo.locate(*t.contact)
+            if g is not None:
+                side_ab, side_cb, angle_deg = g
+                terminal_lines.append(
+                    f"Obj {t.id}: Lateral Distance (AB) = {side_ab:+.3f} m | "
+                    f"Forward Distance (CB) = {side_cb:.3f} m | "
+                    f"Horizontal Angle = {angle_deg:+.2f} deg")
+                geo_cols = [f"{side_ab:.4f}", f"{side_cb:.4f}", f"{angle_deg:.3f}"]
+            else:
+                geo_cols = ["", "", ""]
+            csv_writer.writerow([frame_idx, t.id, x1, y1, x2, y2, cx, cy, t.sources] + geo_cols)
+
+        # print distances/angles in the terminal only when they change
+        current_print_str = "\n".join(terminal_lines)
+        if current_print_str and current_print_str != last_print_str:
+            print("-" * 75)
+            print(current_print_str)
+            last_print_str = current_print_str
 
         cv2.putText(vis, f"frame {frame_idx}  objects={len(confirmed)}", (8, 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
