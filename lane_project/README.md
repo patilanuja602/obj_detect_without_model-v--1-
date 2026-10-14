@@ -90,3 +90,31 @@ lane_project/
 │  ├─ lanes.py    pipeline.py   overlay.py
 └─ tests/test_synthetic.py    horizon follows camera pitch; right lane chosen
 ```
+
+---
+
+# Part 2 — Vehicle detection (no model, no weights)
+
+The lane code above is **untouched**. `vehicle_detector/` only reads its output (`LaneResult`: horizon, left/right boundary).
+
+```bash
+python run_lane_and_vehicles.py --source road.mp4 --show
+python run_lane_and_vehicles.py --source road.mp4 --save out.mp4 --log-csv vehicles.csv
+python run_lane_and_vehicles.py --source road.mp4 --show --debug     # search area (cyan) + rejected blobs with the reason
+python tests/test_vehicle_smoke.py
+```
+Options: `--max-distance 45` (m, approx), `--side-lanes 3` (lanes searched each side of yours), `--hood 0.93` (rows below this height fraction are your own bonnet; raise/lower to match your camera). All other lane options are the same as `run_lane_detection.py`.
+Each box is labelled FRONT (in your lane), LEFT or RIGHT with an approximate distance (from lane width, rough).
+
+## How it works
+1. **Search area from your lanes** – ego lane + up to N lane-widths each side, only where the surface is neutral grey (road-like), from the bonnet to `--max-distance`. Sky, buildings, trees are never examined.
+2. **Asphalt model** – robust curve of asphalt colour over distance, learned from the ego lane (rows containing a car are outliers); every other lane gets one constant offset (handles e.g. a concrete patch). Pixels that differ from it and are not thin lane paint = candidate vehicle pixels.
+3. **Vehicle checks** – size/shape relative to the local lane width (the lane is the ruler), dark contact shadow or dark body, texture (edges, horizontal gradient), and rejection of walls/dividers (their base keeps one lateral position while rows change). Blobs touching the far limit get the roof found from an edge search / typical car height. Two adjacent vehicles with a clear brightness step are split.
+4. **Tracker** – confirms a box after 3 frames, smooths it, bridges short gaps. If the lane code's horizon spikes for a few frames the boxes are held instead of guessed.
+
+## Known limits (tested on public highway clips only)
+- Needs a lane lock from the lane code; with no lane lines there is no search area.
+- Road with very different surfaces (concrete patch beside asphalt) can miss or invent boxes; guard-rails/parapets beside the road can occasionally be boxed.
+- Pale vehicles on pale road, very far (> ~45 m) or very small vehicles are missed.
+- Distance is approximate (lane width / camera field of view = `hfov_deg` 70° assumed).
+- Tuning lives in `vehicle_detector/config.py` (`min_dL`, `min_grad_x`, `road_max_chroma`, ...).
