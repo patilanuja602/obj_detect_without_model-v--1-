@@ -1,0 +1,28 @@
+[PASS] T01 both boundaries valid: green corridor + both lines
+[PASS] T02 left detected, right missing, ROI edge plausible -> inferred right, green corridor (Case A)
+[PASS] T03 right detected, left missing, ROI edge plausible -> inferred left (Case B)
+[PASS] T04 one boundary tracked (hidden for 3 frames): tracked position preferred over ROI edge (Case C)
+[PASS] T05 both boundaries temporarily missing: lane kept <= max_hold2 frames, then removed (nothing stale drawn)
+[PASS] T06 one-frame dropout: lane stays (dashed), recovers to OBSERVED
+[PASS] T07 several consecutive misses then reacquisition: smooth, solid lines again (T17)
+[PASS] T08 small far-field crossing: valid ~80+% of the corridor is KEPT, invalid end clipped, everything agrees
+[PASS] T09 crossing closer to the camera: only the valid section (~40%) is shown; if nothing valid remains -> removed
+[PASS] T10 one boundary jumps because of a false measurement: lane kept, jump NOT blended, recovers
+[PASS] T11 repeated consistent conflicting measurements = genuine change: lane kept meanwhile, then replaced
+[PASS] T12 persistent mutually inconsistent conflicts: held only a bounded time (no stale lane forever)
+[PASS] T13 genuine curved-road transition: no dropout, tracking lag < 3 px
+[PASS] T14 dashed marking disappearing for 2 of every 4 frames: lane never removed, gaps drawn dashed
+[PASS] T15 concrete wall that legitimately borders the road: 'edge' type accepted, green lane (no orange)
+[PASS] T16 roadside divider appearing for 3 frames at a far offset: corridor not pulled, lane kept
+[PASS] T17 divider as the ONLY 'boundary' (weak evidence, never supported): not drawn as a lane side
+[PASS] T18 vehicle edge (near-vertical) detected as left boundary: never becomes a lane side; established boundary survives it
+[PASS] T19 unsuitable ROI fallback (default ROI -> corridor 1.4x lane width): no invented corridor, thin one-sided line, limitation exposed
+[PASS] T19b plausible-width ROI edge that would make the boundary JUMP from where it was displayed is rejected (no abrupt edge change)
+[PASS] T20 fill, boundary lines and HUD share the same far end (open / converging / crossing / flare / inferred)
+[PASS] T21 genuine road widening: gradual +17% accepted without dropout; abrupt jump accepted only after longer agreement
+[PASS] T21b abrupt NARROWING from a false boundary (road symbol inside the lane): needs 2x longer agreement, lane never removed
+[PASS] T22 hysteresis: alternating evidence never flickers; sustained loss of evidence DOES remove the lane (bounded)
+[PASS] T23 no lane evidence at all: nothing drawn
+[PASS] T24 display is green in EVERY lane state (observed / tracked / inferred / one-sided / corridor-clipped)
+
+26/26 tests passed

@@ -1,0 +1,13 @@
+machine: x86_64 | cores=1 | python 3.12.3 | numpy 2.4.4 | opencv 4.13.0
+frames 450 from t=4.337s, processing 640x360, display 1280x720
+
+ALGO-ONLY process(): ms/frame, 4 interleaved reps x 405 frames
+  impl   mean (rep range)       p50    p95    p99    worst   FPS(mean)   draw mean ms
+  V6      6.23 (5.90-6.50)    5.83   8.78  10.28   20.60       160       1.62
+  V5      6.07 (5.58-6.49)    5.74   8.68  10.49   14.49       165       1.51
+  V4      5.85 (5.62-6.09)    5.54   8.25   9.44   17.86       171       1.27
+
+END-TO-END (decode+resize+process+draw+mp4 write, no window), 2 interleaved reps x 450 frames
+  V6      34.8 FPS (range 33.4-36.2)  process CPU 98% of one core   ms/frame: dec 9.27  rs 6.54  proc 6.17  draw 1.33  wr 5.49
+  V5      36.8 FPS (range 36.7-37.0)  process CPU 98% of one core   ms/frame: dec 8.78  rs 6.22  proc 5.67  draw 1.21  wr 5.25
+  V4      35.4 FPS (range 34.8-36.0)  process CPU 98% of one core   ms/frame: dec 9.24  rs 6.44  proc 5.84  draw 1.14  wr 5.58
