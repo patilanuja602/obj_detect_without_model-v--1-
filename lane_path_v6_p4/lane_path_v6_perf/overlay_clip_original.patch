@@ -1,0 +1,105 @@
+--- lane_path_v6_before.py	2026-10-29 06:15:52.090284231 +0000
++++ lane_path_v6.py	2026-10-29 06:04:27.153054687 +0000
+@@ -22,6 +22,9 @@
+   5. The far end of the displayed corridor may move up the image at most ext_grow px/frame (shrinking is immediate), which removes
+      the saw-tooth in the fill's top edge without ever drawing beyond the valid extent.
+ 
++  6. Display-only overlay clip (overlay_top_y / overlay_top_frac in CFG6): the green fill and boundary lines are not drawn above that row.
++     Detection, tracking, result["lane"], pts_L/pts_R, corridor and extent_y are untouched (only draw() changed).
++
+ Run:   python3 lane_path_v6.py INPUT.mp4 OUTPUT.mp4 [--start S] [--duration D] [--profile mountain] [--debug] [--show]
+ """
+ import argparse
+@@ -1292,10 +1295,34 @@
+     fb_jump_px=30.0,
+     scan_n=128,          # rows used to find the first invalid row of the corridor
+     line_bgr=(40, 215, 40),  # displayed boundary colour; the fill uses GREEN.  NEVER changes with state.
++    # ---- DISPLAY-ONLY overlay clip (does not touch detection, tracking, result["lane"], pts_L/pts_R or corridor) ----
++    # overlay_top_y: image ROW, in PROCESSING-FRAME pixels (the frame passed to process(); row 0 = top, y grows downward).
++    #   The green fill and the boundary lines are NOT drawn above this row.  E.g. processing height 360 and overlay_top_y=180
++    #   -> nothing green above row 180.  draw() converts it to the display frame with the same scale it uses for the corridor.
++    #   0 (or any value <= the corridor's far end) = no clipping = the original V6 overlay.
++    #   None = use overlay_top_frac * processing height (resolution independent default).
++    overlay_top_y=None,
++    overlay_top_frac=0.72,   # default clip row as a fraction of the processing height (ROI spans 0.615 .. 0.985 by default)
+ )
+ _RANK = {UNKNOWN: 0, ROAD_EDGE: 1, PAINTED: 2}
+ 
+ 
++def _clip_top(pts, y_clip):
++    """DISPLAY-ONLY clip of an upward-running polyline (rows DEcrease along the array, as pts_L / pts_R / partial points do).
++    pts: (N,2) float [x, y] in processing px.  Keeps the part at or below row y_clip (y >= y_clip) and replaces the first point
++    above it by the linearly interpolated point ON the row y_clip.  Returns a NEW array (input never modified), the SAME object if
++    nothing lies above y_clip, or None if nothing is left.  Used for the fill's two sides with the same ys, so both end on one row."""
++    y = pts[:, 1]
++    if y_clip is None or y.min() >= y_clip:
++        return pts
++    if y[0] <= y_clip:
++        return None
++    i = int(np.argmax(y < y_clip))                      # first point strictly above the clip row (i >= 1 here)
++    a, b = pts[i - 1], pts[i]
++    t = (a[1] - y_clip) / (a[1] - b[1])
++    return np.vstack([pts[:i], [a[0] + t * (b[0] - a[0]), y_clip]])
++
++
+ class PathDetectorV6(_DetectorV4):
+     """Same measurement pipeline as the old versions (bit-identical edges/segments/fits/tracking), different DECISION layer.
+ 
+@@ -1546,18 +1573,24 @@
+ 
+     # ------------------------------------------------------------------ drawing: always green
+     def draw(self, disp, L=None, R=None, fps=None, debug=False):
+-        s = disp.shape[1] / self.w
++        s = disp.shape[1] / self.w                      # processing -> display scale (same one used for every overlay coordinate)
+         lane = self.result["lane"]
+         c6 = self.c6
+         lc = c6["line_bgr"]
++        yc = c6["overlay_top_y"]                        # display-only clip row, PROCESSING-frame px (clipped BEFORE scaling by s)
++        yc = c6["overlay_top_frac"] * self.h if yc is None else float(yc)
+         if lane["state"] == "LANE":
+             cr = lane["corridor"]
+-            ov = disp.copy()
+-            pl, pr = np.stack([cr["xl"], cr["ys"]], 1) * s, np.stack([cr["xr"], cr["ys"]], 1) * s
+-            cv2.fillPoly(ov, [np.concatenate([pl, pr[::-1]]).astype(np.int32)], GREEN)
+-            disp = cv2.addWeighted(ov, 0.30, disp, 0.70, 0)
++            pl, pr = _clip_top(np.stack([cr["xl"], cr["ys"]], 1), yc), _clip_top(np.stack([cr["xr"], cr["ys"]], 1), yc)
++            if pl is not None and pr is not None:       # both sides share the same ys -> identical cut row, flat top edge
++                ov = disp.copy()
++                cv2.fillPoly(ov, [np.concatenate([pl * s, (pr * s)[::-1]]).astype(np.int32)], GREEN)
++                disp = cv2.addWeighted(ov, 0.30, disp, 0.70, 0)
+ 
+         def line(pts, source, th):
++            pts = _clip_top(pts, yc)                    # same visible extent as the fill; lane["pts_*"] itself is not modified
++            if pts is None:
++                return
+             p = (pts * s).astype(np.int32)
+             if source == OBSERVED:
+                 cv2.polylines(disp, [p], False, lc, th, cv2.LINE_AA)
+@@ -1620,6 +1653,10 @@
+     ap.add_argument("--profile", choices=list(PROFILES), default="mountain")
+     ap.add_argument("--top-y", type=float)
+     ap.add_argument("--top-x", type=float, nargs=2)
++    ap.add_argument("--overlay-top-y", type=float, default=None,
++                    help="display-only: do not draw the green overlay above this row (PROCESSING-frame px, row 0 = top; 0 = no clipping)")
++    ap.add_argument("--overlay-top-frac", type=float, default=None,
++                    help="same, as a fraction of the processing height (used when --overlay-top-y is not given; default %.2f)" % CFG6["overlay_top_frac"])
+     a = ap.parse_args()
+     src = a.src or a.source_opt
+     if not src:
+@@ -1646,7 +1683,15 @@
+     ph = int(round(sh * pw / sw))
+     ow = a.out_w
+     oh = int(round(sh * ow / sw))
+-    det = PathDetectorV6(pw, ph, cfg)
++    cfg6 = {}
++    if a.overlay_top_y is not None:
++        cfg6["overlay_top_y"] = a.overlay_top_y
++    if a.overlay_top_frac is not None:
++        cfg6["overlay_top_frac"] = a.overlay_top_frac
++    det = PathDetectorV6(pw, ph, cfg, cfg6=cfg6)
++    print("processing %dx%d  display %dx%d  overlay clip row = %.1f (processing px) -> %.1f (display px)" % (
++        pw, ph, ow, oh, det.c6["overlay_top_y"] if det.c6["overlay_top_y"] is not None else det.c6["overlay_top_frac"] * ph,
++        (det.c6["overlay_top_y"] if det.c6["overlay_top_y"] is not None else det.c6["overlay_top_frac"] * ph) * ow / pw))
+     tmp = (dst + ".tmp.mp4") if dst else None
+     vw = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"), fps_in, (ow, oh)) if tmp else None
+     times, n = [], 0

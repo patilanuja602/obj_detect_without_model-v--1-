@@ -1,0 +1,262 @@
+--- lane_path_v6_pre_opt.py	2026-10-29 09:21:38.742712688 +0000
++++ lane_path_v6_opt.py	2026-10-29 09:22:16.349195394 +0000
+@@ -25,12 +25,22 @@
+   6. Display-only overlay clip (overlay_top_y / overlay_top_frac in CFG6): the green fill and boundary lines are not drawn above that row.
+      Detection, tracking, result["lane"], pts_L/pts_R, corridor and extent_y are untouched (only draw() changed).
+ 
++  7. PERFORMANCE ONLY (no change to detection, tracking, result["lane"], corridor geometry or the displayed pixels; see the PERF notes):
++       a. the processing-size resize is computed only for the ROI rows/cols that process() reads (bit-identical for integer scale factors,
++          self-checked on the first frame, automatic fall-back to the full resize otherwise);
++       b. draw() blends the green fill only inside the fill's bounding rectangle instead of copying/blending the whole display frame;
++       c. frame decoding and video writing run on background threads (order preserved, no frame is ever dropped; bounded queues);
++          on by default when the machine has >= 2 CPUs, see --threads;
++       d. the final summary line now reports END-TO-END throughput as well as the algorithm-only figure shown in the HUD.
++
+ Run:   python3 lane_path_v6.py INPUT.mp4 OUTPUT.mp4 [--start S] [--duration D] [--profile mountain] [--debug] [--show]
+ """
+ import argparse
+ import os
++import queue
+ import shutil
+ import subprocess
++import threading
+ import time
+ 
+ import cv2
+@@ -1323,6 +1333,22 @@
+     return np.vstack([pts[:i], [a[0] + t * (b[0] - a[0]), y_clip]])
+ 
+ 
++def _blend_fill(img, poly, color):
++    """PERF.  Pixel-identical to   ov = img.copy(); cv2.fillPoly(ov, [poly], color); img = cv2.addWeighted(ov, 0.30, img, 0.70, 0)
++    but works only inside the polygon's bounding rectangle (outside it ov == img, and addWeighted(x, .3, x, .7) == x for every uint8
++    value, so those pixels are unchanged anyway).  Modifies img IN PLACE and returns it (draw() already drew into its argument)."""
++    H, W = img.shape[:2]
++    x, y, w, h = cv2.boundingRect(poly)
++    x0, y0, x1, y1 = max(x, 0), max(y, 0), min(x + w, W), min(y + h, H)
++    if x1 <= x0 or y1 <= y0:
++        return img
++    sub = img[y0:y1, x0:x1]
++    ov = sub.copy()
++    cv2.fillPoly(ov, [poly], color, offset=(-x0, -y0))
++    cv2.addWeighted(ov, 0.30, sub, 0.70, 0, dst=sub)
++    return img
++
++
+ class PathDetectorV6(_DetectorV4):
+     """Same measurement pipeline as the old versions (bit-identical edges/segments/fits/tracking), different DECISION layer.
+ 
+@@ -1583,9 +1609,7 @@
+             cr = lane["corridor"]
+             pl, pr = _clip_top(np.stack([cr["xl"], cr["ys"]], 1), yc), _clip_top(np.stack([cr["xr"], cr["ys"]], 1), yc)
+             if pl is not None and pr is not None:       # both sides share the same ys -> identical cut row, flat top edge
+-                ov = disp.copy()
+-                cv2.fillPoly(ov, [np.concatenate([pl * s, (pr * s)[::-1]]).astype(np.int32)], GREEN)
+-                disp = cv2.addWeighted(ov, 0.30, disp, 0.70, 0)
++                _blend_fill(disp, np.concatenate([pl * s, (pr * s)[::-1]]).astype(np.int32), GREEN)   # PERF: bounding rect only
+ 
+         def line(pts, source, th):
+             pts = _clip_top(pts, yc)                    # same visible extent as the fill; lane["pts_*"] itself is not modified
+@@ -1637,6 +1661,121 @@
+ 
+ 
+ # ======================================================================================================
++# PERF helpers (frame handling only; none of this touches the detector)
++# ======================================================================================================
++class _ProcResizer:
++    """INTER_AREA resize of a source frame to the processing size, computing ONLY the ROI rows/cols that process() reads
++    (it only ever slices frame[y0:y1, x0:x1]).  With an integer source->processing scale k, INTER_AREA is a k x k box average and
++    every output pixel depends only on its own k x k block, so the ROI-only result is bit-identical to the full resize (checked on the
++    first frame by self_check(); any mismatch, or a non-integer scale, silently falls back to the full resize).
++    NOTE: in fast mode the rows outside the ROI of the returned buffer are ZERO and the buffer is reused for the next frame.  Code that
++    needs the whole processing-size frame (e.g. a future vehicle detector) should call .full(frame) or construct with enabled=False."""
++
++    def __init__(self, det, sw, sh, pw, ph, enabled=True):
++        self.pw, self.ph, self.fast = pw, ph, False
++        if enabled and sw % pw == 0 and sh == ph * (sw // pw):
++            y0, y1, x0, x1 = det.y0, det.y1, det.x0, det.x1
++            if 0 <= y0 < y1 <= ph and 0 <= x0 < x1 <= pw:
++                self.k, self.roi, self.fast = sw // pw, (y0, y1, x0, x1), True
++                self.buf = np.zeros((ph, pw, 3), np.uint8)
++
++    def full(self, f):
++        return cv2.resize(f, (self.pw, self.ph), interpolation=cv2.INTER_AREA)
++
++    def __call__(self, f):
++        if not self.fast:
++            return self.full(f)
++        k, (y0, y1, x0, x1) = self.k, self.roi
++        self.buf[y0:y1, x0:x1] = cv2.resize(f[y0 * k:y1 * k, x0 * k:x1 * k], (x1 - x0, y1 - y0), interpolation=cv2.INTER_AREA)
++        return self.buf
++
++    def self_check(self, f):
++        if self.fast:
++            y0, y1, x0, x1 = self.roi
++            if not np.array_equal(self.full(f)[y0:y1, x0:x1], self(f)[y0:y1, x0:x1]):
++                self.fast = False
++                print("note: ROI-only resize is not bit-identical on this OpenCV build -> using the full resize")
++        return self.fast
++
++
++class _Prefetch:
++    """Reads frames on a background thread (cv2 releases the GIL inside read()).  Same frames, same order, nothing is dropped: the queue
++    is bounded and the reader BLOCKS when it is full.  get() returns None at end of stream."""
++
++    def __init__(self, cap, depth=6):
++        self.cap, self.q, self.stop, self.err = cap, queue.Queue(depth), threading.Event(), None
++        self.t = threading.Thread(target=self._run, name="lane-reader", daemon=True)
++        self.t.start()
++
++    def _put(self, item):
++        while not self.stop.is_set():
++            try:
++                self.q.put(item, timeout=0.1)
++                return True
++            except queue.Full:
++                pass
++        return False
++
++    def _run(self):
++        try:
++            while not self.stop.is_set():
++                ok, f = self.cap.read()
++                if not ok or not self._put(f):
++                    break
++        except BaseException as e:           # surfaced in get()
++            self.err = e
++        finally:
++            self._put(None)
++
++    def get(self):
++        item = self.q.get()
++        if item is None and self.err is not None:
++            raise self.err
++        return item
++
++    def close(self):                          # call BEFORE cap.release()
++        self.stop.set()
++        try:
++            while True:
++                self.q.get_nowait()
++        except queue.Empty:
++            pass
++        self.t.join()
++
++
++class _AsyncWriter:
++    """cv2.VideoWriter.write on a background thread.  Frames are written in order, none dropped (bounded queue, producer blocks if full).
++    close() flushes everything; call it BEFORE vw.release().  The caller must not modify a frame after write()."""
++
++    def __init__(self, vw, depth=8):
++        self.vw, self.q, self.err = vw, queue.Queue(depth), None
++        self.t = threading.Thread(target=self._run, name="lane-writer", daemon=True)
++        self.t.start()
++
++    def _run(self):
++        while True:
++            fr = self.q.get()
++            if fr is None:
++                return
++            if self.err is None:
++                try:
++                    self.vw.write(fr)
++                except BaseException as e:
++                    self.err = e
++
++    def write(self, fr):
++        if self.err is not None:
++            raise self.err
++        self.q.put(fr)
++
++    def close(self):
++        self.q.put(None)
++        self.t.join()
++        if self.err is not None:
++            raise self.err
++
++
++# ======================================================================================================
+ # command line
+ # ======================================================================================================
+ def main():
+@@ -1657,7 +1796,13 @@
+                     help="display-only: do not draw the green overlay above this row (PROCESSING-frame px, row 0 = top; 0 = no clipping)")
+     ap.add_argument("--overlay-top-frac", type=float, default=None,
+                     help="same, as a fraction of the processing height (used when --overlay-top-y is not given; default %.2f)" % CFG6["overlay_top_frac"])
++    ap.add_argument("--threads", choices=["auto", "on", "off"], default="auto",
++                    help="PERF: decode and write video on background threads (same frames, same order). auto = on when the machine has >= 2 CPUs")
++    ap.add_argument("--no-roi-resize", action="store_true", help="PERF: disable the ROI-only processing resize (always do the full-frame resize)")
++    ap.add_argument("--cv-threads", type=int, default=None, help="PERF: cv2.setNumThreads(N); default = OpenCV's own choice")
+     a = ap.parse_args()
++    if a.cv_threads is not None:
++        cv2.setNumThreads(a.cv_threads)
+     src = a.src or a.source_opt
+     if not src:
+         ap.error("an input video is required (e.g. lane_path_v6.py video.mp4 output.mp4)")
+@@ -1694,23 +1839,41 @@
+         (det.c6["overlay_top_y"] if det.c6["overlay_top_y"] is not None else det.c6["overlay_top_frac"] * ph) * ow / pw))
+     tmp = (dst + ".tmp.mp4") if dst else None
+     vw = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"), fps_in, (ow, oh)) if tmp else None
++    use_thr = a.threads == "on" or (a.threads == "auto" and (os.cpu_count() or 1) >= 2)
++    rs = _ProcResizer(det, sw, sh, pw, ph, enabled=not a.no_roi_resize)
++    rs.self_check(f)
++    print("perf: roi-resize=%s threads=%s cv2-threads=%d" % ("on" if rs.fast else "off", "on" if use_thr else "off", cv2.getNumThreads()))
++    rd = _Prefetch(cap) if use_thr else None
++    sink = _AsyncWriter(vw) if (vw and use_thr) else vw
+     times, n = [], 0
+-    while ok and n < n_max:
+-        small = cv2.resize(f, (pw, ph), interpolation=cv2.INTER_AREA)
+-        t0 = time.perf_counter()
+-        L, R = det.process(small)
+-        times.append(time.perf_counter() - t0)
+-        disp = cv2.resize(f, (ow, oh), interpolation=cv2.INTER_AREA)
+-        fps = 1.0 / np.mean(times[-30:])
+-        out_frame = det.draw(disp, L, R, fps, a.debug)
+-        if vw:
+-            vw.write(out_frame)
+-        if a.show:
+-            cv2.imshow("lane_path_v6 (q to quit)", out_frame)
+-            if cv2.waitKey(1) & 0xFF == ord("q"):
+-                break
+-        n += 1
+-        ok, f = cap.read()
++    t_loop = time.perf_counter()
++    try:
++        while f is not None and n < n_max:
++            small = rs(f)
++            t0 = time.perf_counter()
++            L, R = det.process(small)
++            times.append(time.perf_counter() - t0)
++            disp = cv2.resize(f, (ow, oh), interpolation=cv2.INTER_AREA)
++            fps = 1.0 / np.mean(times[-30:])
++            out_frame = det.draw(disp, L, R, fps, a.debug)
++            if sink:
++                sink.write(out_frame)
++            if a.show:
++                cv2.imshow("lane_path_v6 (q to quit)", out_frame)
++                if cv2.waitKey(1) & 0xFF == ord("q"):
++                    break
++            n += 1
++            if rd is not None:
++                f = rd.get()
++            else:
++                ok, f = cap.read()
++                f = f if ok else None
++    finally:
++        if rd is not None:
++            rd.close()
++        if sink is not vw and sink is not None:
++            sink.close()
++    t_loop = time.perf_counter() - t_loop
+     if vw:
+         vw.release()
+     cap.release()
+@@ -1727,6 +1890,8 @@
+     if len(t) > 0:
+         print("frames=%d  algo-only: mean %.0f FPS, p95 latency %.1f ms, worst %.1f ms  (processing size %dx%d)"
+               % (n, 1 / t.mean(), np.percentile(t, 95) * 1000, t.max() * 1000, pw, ph))
++        print("end-to-end: %d frames in %.2f s = %.1f FPS  (decode + resize + algorithm + draw%s; excludes the final ffmpeg re-encode)"
++              % (n, t_loop, n / t_loop, " + video write" if vw else ""))
+ 
+ 
+ if __name__ == "__main__":

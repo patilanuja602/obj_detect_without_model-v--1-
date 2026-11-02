@@ -1,46 +1,47 @@
-# Classical Lane Detection — Final Best Version (`lane_path_v6`)
+# High-Performance Classical Lane Detection — Best Lane (~29 FPS)
 
-Single-file standalone classical lane detector (**no deep learning, no weights, CPU only, OpenCV + NumPy**).
+Single-file standalone classical lane detector (**no deep learning, no weights, pure OpenCV + NumPy**).
 
-This version (`lane_path_v6`) represents the **final best lane detection** pipeline with:
-- **Consistent overlay**: Smooth green lane corridor with line styling indicating status (solid = observed, dashed = tracked, dotted = inferred).
-- **Graceful corridor clipping**: Corridor terminates at the first invalid row (crossing / diverging / flare) instead of dropping the entire lane.
-- **One-sided / Inferred fallback**: Intelligently maintains guidance when one boundary is temporarily occluded or missing.
-- **Outlier rejection & temporal smoothing**: Bounded tracking prevents sudden jumps, flickering, or saw-tooth top-edge artifacts.
-- **100% Standalone**: Self-contained in [`lane_path_v6/lane_path_v6.py`](lane_path_v6/lane_path_v6.py) without dependencies on previous iterations.
+This version (`lane_path_v6_p4`) provides our **best lane detection performance**, reaching up to **~29 FPS** via:
+- **Pipelined Multi-threading**: Background worker threads for decoding and display resizing running in parallel with the detection loop.
+- **Fast Display Interpolation**: Optional `--display-interp linear` for ~5x faster background frame resizing without affecting detection accuracy.
+- **ROI-Only Processing Resize**: Downscaling computed only for the required road region rather than the entire full-resolution frame.
+- **Robust Classical Geometry**: Solid/dashed/dotted line styling, bounded corridor clipping at the first invalid row, and one-sided fallback.
 
 ---
 
-## Usage (`lane_path_v6`)
+## Quick Start (`lane_path_v6_p4`)
 
 ```bash
-cd lane_path_v6
+cd lane_path_v6_p4
 source ../.venv/bin/activate
 ```
 
-### 1. Live Preview Window (`--show`)
-*(Press `q` anytime to quit)*
+### 1. High-Performance Live Preview (~29 FPS)
 ```bash
-python3 lane_path_v6.py --source ../videos/1.mp4 --show
+python3 lane_path_v6_p3.py --source videos/1.mp4 --display-interp linear --show
+```
+*(Press `q` to quit)*
+
+### 2. Standard Live Preview
+```bash
+python3 lane_path_v6_p3.py --source videos/1.mp4 --show
 ```
 
-### 2. Live Debug View (`--debug`)
+### 3. Debug View (Edges, Hough Lines, Corridor)
 ```bash
-python3 lane_path_v6.py --source ../videos/1.mp4 --show --debug
+python3 lane_path_v6_p3.py --source videos/1.mp4 --show --debug
 ```
 
-### 3. Save Output Video
+### 4. Save Video Output
 ```bash
-python3 lane_path_v6.py --source ../videos/1.mp4 --save output_v6.mp4
+python3 lane_path_v6_p3.py --source videos/1.mp4 --save output_v6_p4.mp4
 ```
-
-### 4. Road Profiles (Mountain vs Highway)
-* **Mountain (default)**: `python3 lane_path_v6.py --source ../videos/1.mp4 --profile mountain --show`
-* **Highway**: `python3 lane_path_v6.py --source ../videos/1.mp4 --profile highway --show`
 
 ---
 
-## Previous Versions
-- **`v8_lane`**: Baseline single-file classical lane detector ([`lane_path.py`](lane_path.py)).
-- **`v7_best`**: Adaptive lane and vehicle detector (without ML model).
-- **`v6`**: Adaptive classical lane detection with horizon tracking.
+## Tag History
+- `lane_best_29fps` / `v10_lane_best_29fps`: High-performance pipelined lane detector (~29 FPS).
+- `v9_final_best_lane` / `v6_final_best_lane`: Standalone classical lane path detector (lane_path_v6).
+- `v8_lane`: Baseline single-file classical lane detector (`lane_path.py`).
+- `v7_best`: Adaptive lane and vehicle detection (model-free).

@@ -17,7 +17,7 @@ cv2.putText = _spy
 
 def mk(cfg=None, cfg6=None):
     c = dict(CFG); c.update(cfg or {})
-    d = m.PathDetectorV6(640, 360, c, cfg6=cfg6); d._yref = d.y1 - 1; return d
+    d = m.PathDetectorV6(640, 360, c, cfg6=dict(dict(overlay_top_y=0), **(cfg6 or {}))); d._yref = d.y1 - 1; return d   # T01-T24: overlay clip OFF (they test the full corridor)
 def coef(d, xb, vx, vy, curv=0.0): return (curv, (vx - xb) / (vy - d._yref) * d.H, float(xb))
 def meas(c, ytop, ridge=1.0, edge=1.0, mode="A"):
     return dict(coef=tuple(c), y_top=float(ytop), ridge_frac=ridge, edge_frac=edge, mode=mode, windows=None, seed_len=300.0, seed_ridge=10.0)
@@ -283,5 +283,91 @@ def _():
     d2 = mk(); Ln = lambda: meas(coef(d2, 130, 322, 218), d2.y0); Rn = lambda: meas(coef(d2, 480, 318, 218), d2.y0)
     for _ in range(6): step(d2, Ln(), Rn()); render(d2)
     ok({"OBSERVED", "INFERRED", "TRACKED"} <= seen, "states exercised: %s" % seen)       # colour violations are collected by render() and fail the test
+
+# ------------------------------------------------------------------ display-only overlay clip (T25-T31)
+import copy
+def snap(lane):            # deep copy of everything a downstream consumer reads
+    return copy.deepcopy({k: lane[k] for k in ("state", "extent_y", "ext_valid", "pts_L", "pts_R", "corridor", "kind", "note") if k in lane})
+def same(a, b):
+    if isinstance(a, dict): return a.keys() == b.keys() and all(same(a[k], b[k]) for k in a)
+    if isinstance(a, np.ndarray): return b is not None and a.shape == b.shape and np.array_equal(a, b)
+    return a == b
+def fill_rows(img, top=34):
+    body = img[top:].astype(int); G = np.abs(body - np.array(blend(m.GREEN))).sum(2) < 14; G &= (G.sum(1, keepdims=True) >= 20)
+    r = np.nonzero(G.any(1))[0]; return (r[0] + top, r[-1] + top) if len(r) else (None, None)
+
+@test("T25 green fill and lines stop at overlay_top_y; everything below that row is pixel-identical to the unclipped overlay")
+def _():
+    YC = 260
+    a, b = mk(), mk(cfg6=dict(overlay_top_y=YC)); warm(a, 8); warm(b, 8)
+    ok(a.result["lane"]["extent_y"] < YC - 10, "test setup: corridor must reach well above the clip row")
+    ra, rb = render(a), render(b)
+    ok(abs(rb["fill_top"] - YC) <= 1.0, "fill top %.1f != clip row %d" % (rb["fill_top"], YC))
+    ok(rb["line_top"] >= YC - 1.0, "boundary line continues above the clip row: %.1f" % rb["line_top"])
+    ok(ra["fill_top"] < YC - 10 and ra["fill_n"] > rb["fill_n"], "unclipped reference should extend higher")
+    lo = int(YC * 2) + 14      # = one corridor sample step (~9 display px) + line thickness: only the last partial segment next to the cut may differ
+    ok(np.array_equal(ra["img"][lo:], rb["img"][lo:]), "pixels below the clip row differ from the original overlay")
+    band = np.abs(ra["img"][int(YC * 2) + 1:lo].astype(int) - rb["img"][int(YC * 2) + 1:lo].astype(int))      # sub-pixel anti-aliasing of the cut segment's rounded endpoint
+    gm = lambda im: (np.abs(im[int(YC * 2) + 1:lo].astype(int) - np.array(blend(m.GREEN))).sum(2) < 14)
+    ok(np.abs(gm(ra["img"]).sum(1) - gm(rb["img"]).sum(1)).max() <= 4, "fill width just below the cut differs from the original")   # fill extent identical (+-line-edge AA pixels)
+    ok((band.sum(2) > 0).sum() <= 40 and band.max() <= 80, "too much change just below the cut: %d px, max %d" % ((band.sum(2) > 0).sum(), band.max()))
+    ok((rb["img"][34:int(YC * 2) - 6] == BG).all(), "something is drawn above the clip row")      # 6 display px = cap of the 3-px boundary line (+AA); the fill itself ends exactly on the row
+
+@test("T26 internal geometry and lane state are identical with and without clipping (all of result['lane'], extent, corridor, pts_L/R); draw() does not mutate them")
+def _():
+    a, b = mk(), mk(cfg6=dict(overlay_top_y=270))
+    seq = [(good(a), "both")] * 8 + [(good(a), "L")] * 25 + [(good(a), "none")] * 14 + [(good(a), "both")] * 6
+    for (Lm, Rm), mode in seq:
+        Lm2 = {k: (copy.deepcopy(v)) for k, v in Lm.items()}; Rm2 = {k: copy.deepcopy(v) for k, v in Rm.items()}
+        ra = step(a, Lm if mode != "none" else None, Rm if mode == "both" else None)
+        rb = step(b, Lm2 if mode != "none" else None, Rm2 if mode == "both" else None)
+        before = snap(rb["lane"]); partial_b = copy.deepcopy(rb["partial"]); render(b); render(a)
+        ok(same(before, snap(rb["lane"])) and same(partial_b, rb["partial"]), "draw() mutated result['lane']/partial")
+        ok(same(snap(ra["lane"]), snap(rb["lane"])), "lane geometry/state differs with clipping (%s)" % mode)
+        ok(same(ra["corridor"], rb["corridor"]) and ra["extent_y"] == rb["extent_y"] and ra["mode"] == rb["mode"], "corridor/extent/mode differ")
+
+@test("T27 LANE / ONE_SIDED / NONE: ONE_SIDED line is clipped at the same row, NONE draws nothing, states unchanged")
+def _():
+    YC = 260; d = mk(cfg6=dict(overlay_top_y=YC)); seen = set()
+    for _ in range(8): step(d, *good(d))
+    seen.add(render(d)["hud"][:4])
+    for _ in range(40): r = step(d, good(d)[0], None); rd = render(d)
+    ln = r["lane"]; seen.add(ln["state"])
+    ok(ln["state"] in ("LANE", "ONE_SIDED"), "state %s" % ln["state"])
+    if ln["state"] == "ONE_SIDED": ok(rd["fill_n"] == 0 and rd["line_top"] >= YC - 1.0, "one-sided line above clip row: %s" % rd["line_top"])
+    else: ok(rd["fill_top"] >= YC - 1.0 and rd["line_top"] >= YC - 1.0, "inferred lane above clip row")
+    d2 = mk(cfg6=dict(overlay_top_y=YC))
+    for _ in range(6): r2 = step(d2, None, None)
+    rd2 = render(d2); ok(r2["lane"]["state"] == "NONE" and rd2["fill_n"] == 0 and rd2["line_n"] == 0, "NONE drew something")
+
+@test("T28 clip row above the whole corridor (or 0 / frac 0) = original overlay bit-for-bit; clip row below the whole corridor = nothing drawn but lane state still LANE")
+def _():
+    a, b, c, e = mk(), mk(cfg6=dict(overlay_top_y=-50)), mk(cfg6=dict(overlay_top_y=None, overlay_top_frac=0.0)), mk(cfg6=dict(overlay_top_y=500))
+    for d in (a, b, c, e): warm(d, 8)
+    ra, rb, rc, re_ = render(a), render(b), render(c), render(e)
+    ok(np.array_equal(ra["img"], rb["img"]) and np.array_equal(ra["img"], rc["img"]), "clip row above corridor changed the overlay")
+    ok(e.result["lane"]["state"] == LANE and re_["fill_n"] == 0 and re_["line_n"] == 0, "clip below corridor: state/drawing wrong")
+
+@test("T29 coordinate systems: clip row is in PROCESSING px and scaled with the corridor (display 1x, 2x, 3x) ; default fraction follows the processing height (360 and 480)")
+def _():
+    YC = 255; d = mk(cfg6=dict(overlay_top_y=YC)); warm(d, 8)
+    for sc in (1, 2, 3):
+        img = np.full((360 * sc, 640 * sc, 3), BG, np.uint8); out = d.draw(img, None, None, None, False)
+        top, bot = fill_rows(out); ok(abs(top - YC * sc) <= 1.5, "display x%d: fill top %s expected %d" % (sc, top, YC * sc))
+    c = dict(CFG); d2 = m.PathDetectorV6(640, 480, c, cfg6=None); d2._yref = d2.y1 - 1; warm(d2, 8)       # default overlay_top_frac on a 640x480 processing frame
+    out = d2.draw(np.full((480, 640, 3), BG, np.uint8), None, None, None, False); top, _ = fill_rows(out)
+    exp = d2.c6["overlay_top_frac"] * 480; ok(abs(top - exp) <= 1.5, "640x480: fill top %s expected %.1f" % (top, exp))
+
+@test("T30 _clip_top: interpolates the boundary exactly at the cut row, keeps prefix points, never touches its input, no triangular artefact")
+def _():
+    pts = np.stack([np.linspace(100, 300, 11), np.linspace(350, 150, 11)], 1); orig = pts.copy()      # straight line x = 100 + (350 - y) -> 1:1
+    q = m._clip_top(pts, 233.0); ok(np.array_equal(pts, orig), "input modified")
+    ok(np.allclose(q[-1], [100 + (350 - 233.0), 233.0]), "wrong interpolation: %s" % q[-1])
+    ok(np.array_equal(q[:-1], pts[:len(q) - 1]) and (q[:, 1] >= 233.0 - 1e-9).all(), "prefix changed / point above cut kept")
+    ok(m._clip_top(pts, 100.0) is pts and m._clip_top(pts, None) is pts, "no-op case must return the input unchanged")
+    ok(m._clip_top(pts, 360.0) is None, "everything above the cut -> None")
+    L = np.stack([np.linspace(130, 300, 30), np.linspace(354, 223, 30)], 1); R = np.stack([np.linspace(480, 330, 30), np.linspace(354, 223, 30)], 1)
+    l, r = m._clip_top(L, 270.0), m._clip_top(R, 270.0); ok(len(l) == len(r) and l[-1][1] == r[-1][1] == 270.0, "two sides do not end on the same row")
+    ok(r[-1][0] > l[-1][0], "clipped polygon is inverted at the cut row")
 
 print("\n%d/%d tests passed" % (sum(RES), len(RES))); sys.exit(0 if all(RES) else 1)
