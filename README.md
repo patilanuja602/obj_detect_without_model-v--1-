@@ -41,7 +41,8 @@ python3 lane_path_v6_p3.py --source videos/1.mp4 --save output_v6_p4.mp4
 ---
 
 ## Tag History
-- `lane_best_29fps` / `v10_lane_best_29fps`: High-performance pipelined lane detector (~29 FPS).
-- `v9_final_best_lane` / `v6_final_best_lane`: Standalone classical lane path detector (lane_path_v6).
+- `v10_lane_best_29fps`: High-performance pipelined lane detector (~29 FPS, lane_path_v6_p4).
+- `v9_final_best_lane`: Standalone classical lane path detector (lane_path_v6).
 - `v8_lane`: Baseline single-file classical lane detector (`lane_path.py`).
 - `v7_best`: Adaptive lane and vehicle detection (model-free).
+
