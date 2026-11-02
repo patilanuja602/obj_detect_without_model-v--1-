@@ -1,0 +1,18 @@
+{
+ "video": "9977360 (vidA.mp4), full-res 2560x1440, frame index = sequential decode index",
+ "note": "Annotated by eye (Claude) on 4-5x zoomed crops with a 10 px grid BEFORE any algorithm output was inspected on these frames. Estimated reading accuracy +-3 px. top=null means the roof edge was outside the zoom crop (not evaluated). contacts = [left tyre bottom, right tyre bottom]; tyres at this video blur are not individually separable from the underbody shadow, positions are the lower corners of the dark mass.",
+ "frames": {
+  "869":  [ {"id":"blue","box":[1212,920,1290,980],"contacts":[[1217,979],[1286,977]]},
+            {"id":"van","box":[1397,null,1492,1000],"contacts":[[1405,997],[1482,996]]} ],
+  "1049": [ {"id":"blue","box":[1252,903,1432,1046],"contacts":[[1292,1045],[1415,1041]]},
+            {"id":"van","box":[1440,null,1552,1000],"contacts":[[1466,997],[1522,998]]} ],
+  "1139": [ {"id":"blue","box":[1125,913,1265,1043],"contacts":[[1140,1042],[1250,1040]]},
+            {"id":"van","box":[1243,null,1335,990],"contacts":[[1258,988],[1322,988]]} ],
+  "1259": [ {"id":"blue","box":[1054,929,1169,1029],"contacts":[[1062,1027],[1162,1026]]},
+            {"id":"fit","box":[1236,916,1367,1015],"contacts":[[1252,1012],[1358,1013]]} ],
+  "1379": [ {"id":"blue","box":[1057,912,1169,1020],"contacts":[[1062,1019],[1163,1015]]},
+            {"id":"fit","box":[1206,902,1310,984],"contacts":[[1215,979],[1307,979]]} ],
+  "1858": [ {"id":"blue","box":[1163,922,1285,1029],"contacts":[[1166,1028],[1283,1027]]} ]
+ },
+ "excluded_from_gt": "large oblique vehicles whose tyre contacts are outside/occluded (silver SUV 4735/5275, black sedan 7073, Honda Fit 1139 right lane), motorcycles, and vehicles narrower than ~50 px at 2560 width."
+}
