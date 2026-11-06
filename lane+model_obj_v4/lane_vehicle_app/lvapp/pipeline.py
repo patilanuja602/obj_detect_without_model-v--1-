@@ -44,15 +44,18 @@ class FastProcResizer:
         self.buf = np.zeros((ph, pw, 3), np.uint8)
         self.k_y = sh / float(ph)
         self.k_x = sw / float(pw)
+        self.sy0 = max(0, int(round(det.y0 * self.k_y)))
+        self.sy1 = min(sh, int(round(det.y1 * self.k_y)))
+        self.sx0 = max(0, int(round(det.x0 * self.k_x)))
+        self.sx1 = min(sw, int(round(det.x1 * self.k_x)))
+        self.target_size = (det.x1 - det.x0, det.y1 - det.y0)
+        self.dy0, self.dy1 = det.y0, det.y1
+        self.dx0, self.dx1 = det.x0, det.x1
 
     def __call__(self, f):
-        y0, y1, x0, x1 = self.roi
-        sy0, sy1 = int(round(y0 * self.k_y)), int(round(y1 * self.k_y))
-        sx0, sx1 = int(round(x0 * self.k_x)), int(round(x1 * self.k_x))
-        sy0, sy1 = max(0, sy0), min(self.sh, sy1)
-        sx0, sx1 = max(0, sx0), min(self.sw, sx1)
-        if sy1 > sy0 and sx1 > sx0:
-            self.buf[y0:y1, x0:x1] = cv2.resize(f[sy0:sy1, sx0:sx1], (x1 - x0, y1 - y0), interpolation=self.interpolation)
+        if self.sy1 > self.sy0 and self.sx1 > self.sx0:
+            self.buf[self.dy0:self.dy1, self.dx0:self.dx1] = cv2.resize(
+                f[self.sy0:self.sy1, self.sx0:self.sx1], self.target_size, interpolation=self.interpolation)
         return self.buf
 
     def self_check(self, f):
@@ -132,9 +135,17 @@ class Engine:
         self.src_w, self.src_h = src_w, src_h
         lane_cfg = dict(LP.CFG)
         lane_cfg.update(LP.PROFILES[cfg["lane"]["profile"]])
+        if "proc_w" in cfg["lane"]:
+            lane_cfg["proc_w"] = cfg["lane"]["proc_w"]
         if "hough_max_gap" in cfg["lane"]:
             lane_cfg["hough_max_gap"] = cfg["lane"]["hough_max_gap"]
+        if "hough_theta" in cfg["lane"]:
+            lane_cfg["hough_theta"] = cfg["lane"]["hough_theta"]
         pw = lane_cfg["proc_w"]
+        if "hough_min_len" in cfg["lane"]:
+            lane_cfg["hough_min_len"] = cfg["lane"]["hough_min_len"]
+        elif pw != 640:
+            lane_cfg["hough_min_len"] = max(10, int(round(20.0 * pw / 640.0)))
         ph = int(round(src_h * pw / src_w))
         self.pw, self.ph = pw, ph
         self.scale = pw / float(src_w)                       # processing px / original px
@@ -191,6 +202,8 @@ class Engine:
         if self.vdet is not None:                            # first inference allocates; keep it out of the timing
             self.vdet.detect(frame)
         self.rs.self_check(frame)
+        small = self.rs(frame)
+        self.lane.process(small)
 
     # ------------------------------------------------------------------ one frame
     def process(self, frame, fid):

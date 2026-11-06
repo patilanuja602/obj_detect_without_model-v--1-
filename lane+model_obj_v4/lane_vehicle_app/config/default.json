@@ -2,15 +2,18 @@
   "lane": {
     "profile": "mountain",
     "overlay_top_frac": 0.72,
+    "proc_w": 480,
     "max_hold": 12,
-    "hough_max_gap": 16
+    "hough_max_gap": 16,
+    "hough_theta": 0.034906585,
+    "hough_min_len": 18
   },
   "detector": {
     "config": "B2",
     "conf_low": 0.20,
     "nms_iou": 0.50,
     "cross_class_iou": 0.65,
-    "threads": 2,
+    "threads": 1,
     "resize": "linear",
     "hyperthreading": null,
     "ov_preprocess": true
@@ -52,7 +55,7 @@
   },
   "pipeline": {
     "mode": "async",
-    "cv_threads": 1,
+    "cv_threads": 2,
     "fast_resizer": true,
     "display_w": 960,
     "display_interp": "linear",

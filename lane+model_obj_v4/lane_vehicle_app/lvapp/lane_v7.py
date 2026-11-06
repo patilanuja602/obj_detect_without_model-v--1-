@@ -72,3 +72,28 @@ class PathDetectorV7(LP.PathDetectorV6):
         for a, c, b, d in self._rects:
             e[c:d, a:b] = 0
         return e
+
+    def _segments(self, edges):
+        c = self.c
+        theta = c.get("hough_theta", np.pi / 90)
+        ls = cv2.HoughLinesP(edges, 1, theta, c["hough_thresh"], minLineLength=c["hough_min_len"],
+                             maxLineGap=c["hough_max_gap"])
+        if ls is None:
+            return []
+        if ls.ndim == 3:
+            ls = ls[:, 0]
+        ls = ls.astype(np.float32) + np.array([self.x0, self.y0, self.x0, self.y0], np.float32)
+        x1, y1, x2, y2 = ls[:, 0], ls[:, 1], ls[:, 2], ls[:, 3]
+        dx, dy = x2 - x1, y2 - y1
+        keep = (dy != 0) & (np.abs(dy) / (np.abs(dx) + 1e-6) >= c["min_abs_slope"])
+        sw = y1 > y2
+        X1, Y1 = np.where(sw, x2, x1), np.where(sw, y2, y1)
+        X2, Y2 = np.where(sw, x1, x2), np.where(sw, y1, y2)
+        DX, DY = np.where(sw, -dx, dx), np.where(sw, -dy, dy)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            M = DX / DY
+        keep &= np.abs(M) >= c["min_abs_m"]
+        if not keep.any():
+            return []
+        LEN = np.hypot(DX[keep], DY[keep]).tolist()
+        return list(zip(X1[keep], Y1[keep], X2[keep], Y2[keep], M[keep], LEN))
