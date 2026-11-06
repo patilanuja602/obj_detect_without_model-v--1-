@@ -1,0 +1,59 @@
+{
+  "lane": {
+    "profile": "mountain",
+    "overlay_top_frac": 0.72
+  },
+  "detector": {
+    "config": "B2",
+    "conf_low": 0.20,
+    "nms_iou": 0.50,
+    "cross_class_iou": 0.65,
+    "threads": 2,
+    "resize": "linear",
+    "hyperthreading": null,
+    "ov_preprocess": true
+  },
+  "tracker": {
+    "confirm_score": 0.45,
+    "confirm_hits": 3,
+    "confirm_mean_score": 0.25,
+    "max_age": 6,
+    "max_coast_draw": 2,
+    "iou_gate": 0.10,
+    "dist_gate": 0.60,
+    "box_alpha": 0.70,
+    "vel_beta": 0.25,
+    "dup_iou": 0.70,
+    "class_switch_ratio": 1.6,
+    "class_switch_frames": 3,
+    "outside_confirm_score": 0.40,
+    "outside_confirm_hits": 5,
+    "min_box_h": 6,
+    "max_aspect_wh": 4.5,
+    "min_aspect_wh": 0.45
+  },
+  "association": {
+    "enabled": true,
+    "overlap_current": 0.60,
+    "overlap_adjacent": 0.50,
+    "adjacent_width_mult": 1.25,
+    "far_margin_px": 6
+  },
+  "lane_vehicle": {
+    "mask_enabled": false,
+    "mask_min_hits": 3,
+    "mask_min_score": 0.35,
+    "mask_inset_x": 0.06,
+    "mask_bottom_trim": 0.04,
+    "mask_min_h_px": 24,
+    "restore_overlay": true
+  },
+  "pipeline": {
+    "mode": "async",
+    "cv_threads": 2,
+    "fast_resizer": true,
+    "display_w": 1280,
+    "display_interp": "linear",
+    "reader_depth": 6
+  }
+}

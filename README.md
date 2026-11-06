@@ -4,7 +4,32 @@ Real-time computer vision pipeline for lane detection and vehicle perception.
 
 ---
 
-## Latest Version: Optimized Lane + Model Vehicle Detection — `v13_lane+model_obj_v3`
+## Latest Version: Decoupled High-Speed Lane + Vehicle Detection (~30 FPS) — `v14_lane+model_obj_v4_decoupled`
+
+Located in [`lane+model_obj_v4/`](lane+model_obj_v4/):
+- **Decoupled Asynchronous Tracking-by-Detection (`--mode async`, default)**: Separates high-frequency lane detection & vehicle tracking (~30 FPS) from heavy background OpenVINO YOLO26n inference.
+- **Latency-Compensated Vehicle Tracking**: Forward-projects detections ($\Delta \times v$) with $\alpha$-$\beta$ motion smoothing to eliminate spatial lag, maintaining smooth continuous bounding boxes and lane zone classifications on every frame.
+- **Full Baseline Lane Detection Accuracy**: Preserves 100% verified V6 lane detection geometry (LAB color space, CLAHE contrast enhancement, edge mask prior, robust Hough line segment clustering).
+- **Dual HUD Display**: Real-time display showing internal lane math speed (`fps_lane: XX FPS`) and true end-to-end framerate (`end-to-end 30 FPS`).
+
+### Usage (`lane+model_obj_v4`):
+```bash
+cd "lane+model_obj_v4"
+source ../.venv/bin/activate
+
+# 1. Live Preview (Complete Video at 25-30+ FPS)
+bash run.sh videos/99.mp4 --show
+
+# 2. Live Webcam Preview (Camera Index 0)
+bash run.sh 0 --show
+
+# 3. Save Output Video to File
+bash run.sh videos/99.mp4 --save results/output.mp4
+```
+
+---
+
+## Previous Version: Optimized Lane + Model Vehicle Detection — `v13_lane+model_obj_v3`
 
 Located in [`lane+model_obj_v3/`](lane+model_obj_v3/):
 - **Synchronous Dual Pipeline**: V6 lane detection (unmodified classical) combined with real-time YOLO26n vehicle detection via OpenVINO.

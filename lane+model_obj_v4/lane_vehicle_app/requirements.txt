@@ -1,0 +1,6 @@
+# Tested in the preparation sandbox with Python 3.12 / openvino 2026.4 / opencv 5.0 / numpy 2.x.
+# Ubuntu 22.04 ships Python 3.10: if the newest openvino does not install there, use  pip install "openvino==2024.6.0"
+openvino>=2024.6
+opencv-python>=4.8
+numpy>=1.24
+psutil>=5.9
