@@ -4,7 +4,33 @@ Real-time computer vision pipeline for lane detection and vehicle perception.
 
 ---
 
-## Latest Version: Lane + Model Vehicle Detection (~25 FPS) — `v12_lane+model_v2_25fps`
+## Latest Version: Optimized Lane + Model Vehicle Detection — `v13_lane+model_obj_v3`
+
+Located in [`lane+model_obj_v3/`](lane+model_obj_v3/):
+- **Synchronous Dual Pipeline**: V6 lane detection (unmodified classical) combined with real-time YOLO26n vehicle detection via OpenVINO.
+- **Hardware-Accelerated Preprocessing**: Native C++ OpenVINO `PrePostProcessor` integration (`ov_preprocess: true`) eliminating Python array copies.
+- **Advanced Tracking & Deduplication**: Alpha-Beta velocity tracking (`vel_beta: 0.25`), IoU + center distance matching, class-switch hysteresis, and coasting with dashed boxes to prevent flickering.
+- **Occlusion-Aware Display**: Restores vehicle bodies over lane overlays while preserving lane markings at the tyre ground-contact line.
+- **Dual HUD Display**: Shows both lane algorithm rate (`25 FPS (algo)`) and genuine end-to-end throughput (`end-to-end 6 FPS`).
+
+### Usage (`lane+model_obj_v3`):
+```bash
+cd "lane+model_obj_v3"
+source ../.venv/bin/activate
+
+# 1. Live Preview (Complete Video)
+bash run.sh videos/1.mp4 --show
+
+# 2. Faster Detector Mode (Higher FPS)
+bash run.sh videos/1.mp4 --show --set detector.config=B2
+
+# 3. Save Output Video to File
+bash run.sh videos/1.mp4 --save results/output.mp4
+```
+
+---
+
+## Previous Version: Lane + Model Vehicle Detection (~25 FPS) — `v12_lane+model_v2_25fps`
 
 Located in [`lane+model_obj_v2/`](lane+model_obj_v2/):
 - **Synchronous Dual Pipeline**: V6 lane detection (unmodified classical) combined with real-time YOLO26n vehicle detection via OpenVINO.
@@ -74,6 +100,7 @@ python3 lane_path_v6_p3.py --source videos/1.mp4 --display-interp linear --show
 ---
 
 ## Tag History
+- `v13_lane+model_obj_v3`: Optimized lane + model vehicle detection pipeline (`lane+model_obj_v3`).
 - `v12_lane+model_v2_25fps`: Best integrated lane + model vehicle detector (~25 FPS, `lane+model_obj_v2`).
 - `v11_lane_obj_9fps`: Best integrated lane + vehicle detector with tyre contacts (~9 FPS, `lane+object_v3`).
 - `v10_lane_best_29fps`: High-performance pipelined lane detector (~29 FPS, `lane_path_v6_p4`).

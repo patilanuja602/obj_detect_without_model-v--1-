@@ -1,0 +1,6 @@
+99.mp4 @0: frames=150 LANE=143 | frames with a boundary touching a vehicle body: large(h>=24 px)=141  small=120
+99.mp4 @500: frames=150 LANE=147 | frames with a boundary touching a vehicle body: large(h>=24 px)=146  small=74
+99.mp4 @1500: frames=150 LANE=79 | frames with a boundary touching a vehicle body: large(h>=24 px)=49  small=0
+99.mp4 @2500: frames=150 LANE=94 | frames with a boundary touching a vehicle body: large(h>=24 px)=91  small=0
+99.mp4 @3560: frames=150 LANE=149 | frames with a boundary touching a vehicle body: large(h>=24 px)=101  small=144
+99.mp4 @4100: frames=150 LANE=146 | frames with a boundary touching a vehicle body: large(h>=24 px)=50  small=10
