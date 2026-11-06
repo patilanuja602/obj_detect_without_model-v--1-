@@ -1,0 +1,11 @@
+auto-tuning thread settings (short real runs, no display) ...
+  vehicle threads 1, cv threads default -> 10.6 FPS (p95 frame 114.2 ms)
+  vehicle threads 1, cv threads 1       -> 10.2 FPS (p95 frame 116.2 ms)
+  vehicle threads 2, cv threads default -> 10.1 FPS (p95 frame 114.1 ms)
+  vehicle threads 2, cv threads 1       -> 10.5 FPS (p95 frame 110.5 ms)
+  vehicle threads 3, cv threads default -> 10.8 FPS (p95 frame 112.6 ms)
+  vehicle threads 3, cv threads 1       -> 10.3 FPS (p95 frame 105.4 ms)
+  vehicle threads 4, cv threads default -> 9.3 FPS (p95 frame 145.4 ms)
+  vehicle threads 4, cv threads 1       -> 9.4 FPS (p95 frame 130.0 ms)
+best measured: vehicle threads 3, cv threads default  (10.8 FPS)
+frames 25 | end-to-end 9.9 FPS | frame p95 113.0 ms | lane 19.6 ms | detector 93.2 ms | cpu 0.99 cores | rss 390 MB | lane/det calls 25/25, dropped 0

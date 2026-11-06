@@ -1,0 +1,11 @@
+done lane mask OFF (baseline lane)
+done mask, unprotected (v1)
+done mask + protect tracked boundary (+-4 px)
+done mask + protect (+-4 px), occlusion hold 40
+
+variant                                             LANE%  1-sided%  NONE%  longest   jumps bndry-on-veh win nonLANE  win NO-LANE
+lane mask OFF (baseline lane)                        79.6      14.4    6.0       33       0        34         48           13
+mask, unprotected (v1)                               81.1      16.5    2.5       47       0        10         40            6
+mask + protect tracked boundary (+-4 px)             81.1      16.5    2.5       47       0        28         40            6
+mask + protect (+-4 px), occlusion hold 40           81.1      16.5    2.5       47       0        28         40            6
+ALLDONE

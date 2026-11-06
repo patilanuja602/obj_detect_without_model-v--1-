@@ -1,0 +1,70 @@
+{
+  "_comment": "Improved application defaults. All paths are relative to the project folder.",
+  "source": {
+    "start_sec": 0.0
+  },
+  "lane": {
+    "file": "lane_baseline/lane_path_v6_p3.py",
+    "profile": "mountain",
+    "mask_mode": "off",
+    "mask_min_conf": 0.45,
+    "mask_min_hits": 2,
+    "mask_margin_x": 0.08,
+    "mask_margin_bottom": 4,
+    "mask_max_area_frac": 0.35,
+    "overlay_cut_vehicles": true,
+    "occlusion_hold": 6,
+    "occlusion_min_frac": 0.25,
+    "protect_tracked_px": 0,
+    "mask_min_height_px": 15,
+    "_comment_mask_mode": "off = lane output bit-identical to the V6 baseline (default). prev_tracks / same_frame = EXPERIMENTAL vehicle-aware lane evidence; measured trade-offs in TECHNICAL.md."
+  },
+  "vehicle": {
+    "model_file": "models/yolo26n_960x352.onnx",
+    "band": [
+      0.35,
+      1.0
+    ],
+    "input_source": "original",
+    "conf": 0.2,
+    "resize": "area",
+    "nms_mode": "agnostic_merge",
+    "nms_iou": 0.55,
+    "reject_nonvehicle_ratio": 0.0,
+    "min_height_px": 6,
+    "aspect_range": [
+      0.4,
+      4.0
+    ],
+    "threads": 2
+  },
+  "tracker": {
+    "enabled": true,
+    "enter_score": 0.25,
+    "confirm_score": 0.45,
+    "confirm_hits": 2,
+    "keep_score": 0.2,
+    "max_coast": 2,
+    "match_iou": 0.3,
+    "box_alpha": 0.7,
+    "class_decay": 0.85,
+    "class_switch_ratio": 1.25
+  },
+  "association": {
+    "enabled": true,
+    "zone_persist": 2,
+    "max_extrap_px": 80,
+    "adjacent_range": 1.15,
+    "outside_range": 2.3,
+    "outside_policy": "dim"
+  },
+  "pipeline": {
+    "parallel": true,
+    "decode_threads": true,
+    "display_w": 1280,
+    "cv_threads": null,
+    "output": "show",
+    "out_file": "results/output.mp4",
+    "preprocess_in_stage": true
+  }
+}

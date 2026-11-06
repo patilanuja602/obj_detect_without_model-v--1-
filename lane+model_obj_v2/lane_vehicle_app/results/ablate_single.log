@@ -1,0 +1,4 @@
+done mask near-field only (h>=15 px), unprotected
+
+variant                                             LANE%  1-sided%  NONE%  longest   jumps bndry-on-veh win nonLANE  win NO-LANE
+mask near-field only (h>=15 px), unprotected         85.4      10.0    4.6       67       4         0         55           21

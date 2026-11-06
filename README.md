@@ -1,10 +1,35 @@
 # Classical Lane & Vehicle Detection Pipeline (Pure OpenCV + NumPy)
 
-Real-time classical computer vision pipeline (**no deep learning, no neural network weights, CPU only**).
+Real-time computer vision pipeline for lane detection and vehicle perception.
 
 ---
 
-## Latest Version: Lane + Vehicle Detection (~9 FPS) — `v11_lane_obj_9fps`
+## Latest Version: Lane + Model Vehicle Detection (~25 FPS) — `v12_lane+model_v2_25fps`
+
+Located in [`lane+model_obj_v2/`](lane+model_obj_v2/):
+- **Synchronous Dual Pipeline**: V6 lane detection (unmodified classical) combined with real-time YOLO26n vehicle detection via OpenVINO.
+- **Enhanced Vehicle Detection**: Duplicate-free bounding boxes (class-agnostic NMS merge + class voting), vehicle ground-contact points, road zone association (`CUR`, `L`, `R`, `OUT`, `?`).
+- **Vehicle-Aware Overlay**: Automatically cuts away lane overlay under vehicle bodies.
+- **High Performance**: End-to-end processing at ~25 FPS with multithreaded OpenVINO inference.
+
+### Usage (`lane+model_obj_v2`):
+```bash
+cd "lane+model_obj_v2"
+source ../.venv/bin/activate
+
+# 1. Live Preview (Complete Video)
+bash run.sh --video videos/1.mp4
+
+# 2. Faster Detector Mode (Higher FPS)
+bash run.sh --video videos/1.mp4 --det-config B2
+
+# 3. Save Output Video to File
+bash run.sh --video videos/1.mp4 --output file --out-file results/output.mp4
+```
+
+---
+
+## Previous Version: Lane + Vehicle Detection (~9 FPS) — `v11_lane_obj_9fps`
 
 Located in [`lane+object_v3/`](lane+object_v3/):
 - **Synchronous Dual Detection**: Pipelined V6 lane detector + model-free vehicle detector running in a unified loop (`run_integrated.py`).
@@ -49,6 +74,7 @@ python3 lane_path_v6_p3.py --source videos/1.mp4 --display-interp linear --show
 ---
 
 ## Tag History
+- `v12_lane+model_v2_25fps`: Best integrated lane + model vehicle detector (~25 FPS, `lane+model_obj_v2`).
 - `v11_lane_obj_9fps`: Best integrated lane + vehicle detector with tyre contacts (~9 FPS, `lane+object_v3`).
 - `v10_lane_best_29fps`: High-performance pipelined lane detector (~29 FPS, `lane_path_v6_p4`).
 - `v9_final_best_lane`: Standalone classical lane path detector (`lane_path_v6`).

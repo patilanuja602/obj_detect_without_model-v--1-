@@ -1,0 +1,7 @@
+saved results/seq_before_uhd.pkl 640 frames; lane/det calls 640 640
+saved results/seq_before_hd.pkl 400 frames; lane/det calls 400 400
+saved results/seq_before_nd20.pkl 420 frames; lane/det calls 420 420
+saved results/seq_after_uhd.pkl 640 frames; lane/det calls 640 640
+saved results/seq_after_hd.pkl 400 frames; lane/det calls 400 400
+saved results/seq_after_nd20.pkl 420 frames; lane/det calls 420 420
+ALLDONE

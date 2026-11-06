@@ -1,0 +1,72 @@
+
+================ UHD  (640 frames) ================
+LANE metric                              BEFORE        AFTER
+frames                                      640          640
+lane_pct                                  90.62        90.62
+one_sided_pct                              6.72         6.72
+none_pct                                   2.66         2.66
+changes_per_100                            1.72         1.72
+longest_non_lane                             33           33
+width_jumps_gt25px                            4            4
+width_jump_max_px                         76.12        76.12
+jitter_p95_L                               2.90         2.90
+jitter_p95_R                               1.94         1.94
+frames_boundary_on_vehicle                   34           34
+window_frames                                55           55
+window_non_lane                              48           48
+window_no_lane                               13           13
+VEHICLE metric                           BEFORE        AFTER
+boxes_per_frame                            4.62         4.50
+frames_with_duplicates                      177            0
+dup_pct                                   27.66         0.00
+class_flips_per_100_links                  3.32         0.53
+links                                      2805         2816
+blinks_per_100_boxes                       0.41         0.03
+zones AFTER: {'uncertain': 966, 'current': 631, 'right': 1120, 'outside': 136, 'left': 27}
+first-appearance delay of AFTER vs BEFORE: {'n': 81, 'mean_delay_frames': -0.5925925925925926, 'pct_delayed_ge1': 33.33333333333333, 'max_delay': 5, 'not_shown_by_after': 19}
+
+================ HD  (400 frames) ================
+LANE metric                              BEFORE        AFTER
+frames                                      400          400
+lane_pct                                  88.25        88.25
+one_sided_pct                             10.75        10.75
+none_pct                                   1.00         1.00
+changes_per_100                            4.50         4.50
+longest_non_lane                             13           13
+width_jumps_gt25px                            1            1
+width_jump_max_px                         27.28        27.28
+jitter_p95_L                               3.32         3.32
+jitter_p95_R                               3.16         3.16
+frames_boundary_on_vehicle                    0            0
+VEHICLE metric                           BEFORE        AFTER
+boxes_per_frame                            0.18         0.21
+frames_with_duplicates                        1            0
+dup_pct                                    0.25         0.00
+class_flips_per_100_links                  8.33         3.92
+links                                        36           51
+blinks_per_100_boxes                       0.00         1.18
+zones AFTER: {'uncertain': 41, 'outside': 44}
+first-appearance delay of AFTER vs BEFORE: {'n': 30, 'mean_delay_frames': 0.5333333333333333, 'pct_delayed_ge1': 36.666666666666664, 'max_delay': 6, 'not_shown_by_after': 8}
+
+================ ND20  (420 frames) ================
+LANE metric                              BEFORE        AFTER
+frames                                      420          420
+lane_pct                                  99.05        99.05
+one_sided_pct                              0.71         0.71
+none_pct                                   0.24         0.24
+changes_per_100                            0.95         0.95
+longest_non_lane                              3            3
+width_jumps_gt25px                            0            0
+width_jump_max_px                         10.40        10.40
+jitter_p95_L                               2.29         2.29
+jitter_p95_R                               2.83         2.83
+frames_boundary_on_vehicle                    0            0
+VEHICLE metric                           BEFORE        AFTER
+boxes_per_frame                            0.00         0.00
+frames_with_duplicates                        0            0
+dup_pct                                    0.00         0.00
+class_flips_per_100_links                  0.00         0.00
+links                                         0            0
+blinks_per_100_boxes                       0.00         0.00
+zones AFTER: {}
+first-appearance delay of AFTER vs BEFORE: {'n': 0, 'mean_delay_frames': 0.0, 'pct_delayed_ge1': 0.0, 'max_delay': 0, 'not_shown_by_after': 0}

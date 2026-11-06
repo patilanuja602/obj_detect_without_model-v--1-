@@ -1,0 +1,13 @@
+done lane mask OFF (baseline lane)
+done mask v1: all reliable vehicles, unprotected
+done mask near-field only (h>=15 px), unprotected
+done mask near-field only (h>=15 px) + protect 4 px
+done mask near-field only (h>=25 px) + protect 4 px
+
+variant                                             LANE%  1-sided%  NONE%  longest   jumps bndry-on-veh win nonLANE  win NO-LANE
+lane mask OFF (baseline lane)                        79.6      14.4    6.0       33       0        34         48           13
+mask v1: all reliable vehicles, unprotected          81.1      16.5    2.5       47       0        10         40            6
+mask near-field only (h>=15 px), unprotected         81.1      16.5    2.5       47       0        10         40            6
+mask near-field only (h>=15 px) + protect 4 px       81.1      16.5    2.5       47       0        28         40            6
+mask near-field only (h>=25 px) + protect 4 px       78.6      19.6    1.8       32       0        30         52            2
+ALLDONE
