@@ -40,8 +40,8 @@ LP = load_baseline()
 
 
 class PathDetectorV7(LP.PathDetectorV6):
-    def __init__(self, w, h, cfg=None, cfg6=None, mask_cfg=None):
-        super().__init__(w, h, cfg, cfg6=cfg6)
+    def __init__(self, w, h, cfg=None, cfg2=None, cfg3=None, cfg4=None, cfg6=None, mask_cfg=None):
+        super().__init__(w, h, cfg, cfg2=cfg2, cfg3=cfg3, cfg4=cfg4, cfg6=cfg6)
         self.mc = dict(mask_enabled=True, mask_inset_x=0.06, mask_bottom_trim=0.04, mask_min_h_px=24)
         if mask_cfg:
             self.mc.update(mask_cfg)

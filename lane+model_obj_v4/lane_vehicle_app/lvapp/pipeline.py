@@ -132,12 +132,20 @@ class Engine:
         self.src_w, self.src_h = src_w, src_h
         lane_cfg = dict(LP.CFG)
         lane_cfg.update(LP.PROFILES[cfg["lane"]["profile"]])
+        if "hough_max_gap" in cfg["lane"]:
+            lane_cfg["hough_max_gap"] = cfg["lane"]["hough_max_gap"]
         pw = lane_cfg["proc_w"]
         ph = int(round(src_h * pw / src_w))
         self.pw, self.ph = pw, ph
         self.scale = pw / float(src_w)                       # processing px / original px
         lv = cfg["lane_vehicle"]
-        self.lane = PathDetectorV7(pw, ph, lane_cfg, cfg6=dict(overlay_top_frac=cfg["lane"]["overlay_top_frac"]),
+        cfg2 = {}
+        if "max_hold" in cfg["lane"]:
+            cfg2["max_hold2"] = cfg["lane"]["max_hold"]
+        cfg6 = dict(overlay_top_frac=cfg["lane"]["overlay_top_frac"])
+        if "max_hold" in cfg["lane"]:
+            cfg6["unsup_grace"] = max(10, cfg["lane"]["max_hold"])
+        self.lane = PathDetectorV7(pw, ph, lane_cfg, cfg2=cfg2, cfg6=cfg6,
                                    mask_cfg=dict(mask_enabled=lv["mask_enabled"], mask_inset_x=lv["mask_inset_x"],
                                                  mask_bottom_trim=lv["mask_bottom_trim"], mask_min_h_px=lv["mask_min_h_px"]))
         if cfg["pipeline"].get("fast_resizer", True):

@@ -1,7 +1,9 @@
 {
   "lane": {
     "profile": "mountain",
-    "overlay_top_frac": 0.72
+    "overlay_top_frac": 0.72,
+    "max_hold": 12,
+    "hough_max_gap": 16
   },
   "detector": {
     "config": "B2",
@@ -50,9 +52,9 @@
   },
   "pipeline": {
     "mode": "async",
-    "cv_threads": 2,
+    "cv_threads": 1,
     "fast_resizer": true,
-    "display_w": 1280,
+    "display_w": 960,
     "display_interp": "linear",
     "reader_depth": 6
   }
